@@ -5,3 +5,4 @@ agent/.env
 *.db
 *.db-wal
 *.db-shm
+vigilo

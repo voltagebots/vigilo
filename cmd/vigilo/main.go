@@ -28,6 +28,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build suppress matcher from config rules
+	var suppressRules []collector.SuppressRule
+	for _, r := range cfg.SuppressRules {
+		suppressRules = append(suppressRules, collector.SuppressRule{
+			Match: r.Match, Source: r.Source, Reason: r.Reason,
+		})
+	}
+	suppress := collector.NewSuppressMatcher(suppressRules)
+	if len(suppressRules) > 0 {
+		slog.Info("suppression rules loaded", "count", len(suppressRules))
+	}
+
 	// Event bus — buffered to avoid blocking collectors
 	events := make(chan collector.Event, 512)
 
@@ -39,7 +51,7 @@ func main() {
 	}
 
 	// Start collectors
-	fileWatcher, err := collector.NewFileWatcher(cfg.WatchPaths, cfg.ExcludePaths, events)
+	fileWatcher, err := collector.NewFileWatcher(cfg.WatchPaths, cfg.ExcludePaths, events, suppress)
 	if err != nil {
 		slog.Warn("file watcher unavailable", "err", err)
 	} else {
@@ -83,7 +95,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	slog.Info("vigilo daemon ready", "mcp_transport", cfg.MCPTransport)
+	slog.Info("vigilo daemon ready",
+		"mcp_transport", cfg.MCPTransport,
+		"signal_cooldown", cfg.SignalCooldown,
+	)
 
 	switch cfg.MCPTransport {
 	case "http":

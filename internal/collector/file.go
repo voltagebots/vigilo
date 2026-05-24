@@ -43,18 +43,23 @@ func severityForPath(path string) Severity {
 
 // FileWatcher uses fsnotify to emit Events when sensitive files are accessed.
 type FileWatcher struct {
-	paths   []string
-	exclude []string
-	out     chan<- Event
-	watcher *fsnotify.Watcher
+	paths    []string
+	exclude  []string
+	suppress *SuppressMatcher
+	out      chan<- Event
+	watcher  *fsnotify.Watcher
 }
 
-func NewFileWatcher(paths, exclude []string, out chan<- Event) (*FileWatcher, error) {
+func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*SuppressMatcher) (*FileWatcher, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-	return &FileWatcher{paths: paths, exclude: exclude, out: out, watcher: w}, nil
+	var sm *SuppressMatcher
+	if len(suppress) > 0 {
+		sm = suppress[0]
+	}
+	return &FileWatcher{paths: paths, exclude: exclude, suppress: sm, out: out, watcher: w}, nil
 }
 
 func (fw *FileWatcher) Start() error {
@@ -111,12 +116,15 @@ func (fw *FileWatcher) loop() {
 				if event.Has(fsnotify.Create) {
 					action = "create"
 				}
-				fw.out <- Event{
+				e := Event{
 					Source:    SourceFile,
 					Timestamp: time.Now(),
 					Action:    action,
 					Resource:  event.Name,
 					Severity:  sev,
+				}
+				if !fw.suppress.IsSuppressed(e) {
+					fw.out <- e
 				}
 			}
 			// New subdirectory created — start watching it

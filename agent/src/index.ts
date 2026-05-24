@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import cron from 'node-cron';
-import { SentinelMCPClient, MCPTransport } from './collectors/mcp';
-import { analyzeEvents } from './agents/analyst';
+import { VigiloMCPClient, VigiloEvent, parseTransports } from './collectors/mcp';
+import { analyzeEvents, signalDedupHash, Signal } from './agents/analyst';
 import { SlackAlerter } from './slack/alerter';
 import pino from 'pino';
 
@@ -18,58 +18,90 @@ function requireEnv(key: string): string {
   return v;
 }
 
+// In-process dedup: hash → expiry timestamp
+const dedupCache = new Map<string, number>();
+const DEDUP_TTL_MS = parseInt(process.env.SIGNAL_COOLDOWN_MS ?? String(60 * 60 * 1000)); // 1h default
+
+function isDuplicate(signal: Signal): boolean {
+  const hash = signalDedupHash(signal.category, signal.title, signal.server);
+  const expiry = dedupCache.get(hash);
+  if (expiry && Date.now() < expiry) return true;
+  dedupCache.set(hash, Date.now() + DEDUP_TTL_MS);
+  return false;
+}
+
 async function main() {
-  const slackToken    = requireEnv('SLACK_BOT_TOKEN');
-  const alertChannel  = requireEnv('VIGILO_ALERT_CHANNEL');
-  const scanSchedule  = process.env.SCAN_CRON ?? '*/5 * * * *'; // every 5 min default
-  const lookbackMins  = parseInt(process.env.LOOKBACK_MINUTES ?? '6');
+  const slackToken   = requireEnv('SLACK_BOT_TOKEN');
+  const alertChannel = requireEnv('VIGILO_ALERT_CHANNEL');
+  const scanSchedule = process.env.SCAN_CRON ?? '*/5 * * * *';
+  const lookbackMins = parseInt(process.env.LOOKBACK_MINUTES ?? '6');
 
-  // MCP transport: stdio (local daemon) or http (remote)
-  const transport: MCPTransport = process.env.VIGILO_MCP_URL
-    ? { type: 'http', url: process.env.VIGILO_MCP_URL }
-    : {
-        type: 'stdio',
-        command: process.env.VIGILO_DAEMON_BIN ?? 'vigilo',
-        args: ['-config', process.env.VIGILO_CONFIG ?? '/etc/vigilo/config.yaml'],
-      };
+  const transports = parseTransports();
+  logger.info({ servers: transports.map(t => t.label) }, 'connecting to vigilo daemons');
 
-  const mcpClient = new SentinelMCPClient();
-  const alerter   = new SlackAlerter(slackToken, alertChannel);
+  // Connect all clients in parallel
+  const clients = await Promise.all(
+    transports.map(async ({ label, transport }) => {
+      const c = new VigiloMCPClient(label);
+      await c.connect(transport);
+      logger.info({ server: label, transport: transport.type }, 'connected');
+      return c;
+    }),
+  );
 
-  logger.info({ transport: transport.type }, 'connecting to vigilo daemon via MCP');
-  await mcpClient.connect(transport);
+  const alerter = new SlackAlerter(slackToken, alertChannel);
 
   const runScan = async () => {
     const since = new Date(Date.now() - lookbackMins * 60 * 1000);
-    logger.info({ since }, 'scan started');
+    logger.info({ since, servers: clients.map(c => c.serverLabel) }, 'scan started');
+
+    // Fetch events from all daemons in parallel
+    const perServerEvents = await Promise.allSettled(
+      clients.map(c => c.getAllEvents(since, 'medium')),
+    );
+
+    const allEvents: VigiloEvent[] = [];
+    for (let i = 0; i < clients.length; i++) {
+      const result = perServerEvents[i];
+      if (result.status === 'fulfilled') {
+        allEvents.push(...result.value);
+      } else {
+        logger.error({ server: clients[i].serverLabel, err: result.reason }, 'failed to fetch events');
+      }
+    }
+
+    logger.info({ eventCount: allEvents.length }, 'events aggregated');
+
+    if (allEvents.length === 0) {
+      await alerter.postScanSummary(0, 0, clients.map(c => c.serverLabel));
+      return;
+    }
 
     try {
-      const events = await mcpClient.getAllEvents(since, 'medium');
-      logger.info({ eventCount: events.length }, 'events fetched from daemon');
+      const signals = await analyzeEvents(allEvents, clients.map(c => c.serverLabel));
 
-      const signals = await analyzeEvents(events);
-
+      let posted = 0;
       for (const signal of signals) {
+        if (isDuplicate(signal)) {
+          logger.info({ category: signal.category, title: signal.title }, 'signal suppressed (dedup)');
+          continue;
+        }
         const evidence = (signal.evidenceIndices ?? [])
-          .map(i => events[i])
+          .map(i => allEvents[i])
           .filter(Boolean)
-          .map(e => ({ resource: e.resource, action: e.action, process: e.process }));
+          .map(e => ({ resource: e.resource, action: e.action, process: e.process, server: e.server }));
 
         await alerter.postSignal(signal, evidence);
         logger.info({ signalId: signal.id, severity: signal.severity, title: signal.title }, 'signal posted');
+        posted++;
       }
 
-      if (signals.length === 0) {
-        logger.info({ eventsAnalyzed: events.length }, 'no threats detected');
-      }
-
-      await alerter.postScanSummary(events.length, signals.length);
+      await alerter.postScanSummary(allEvents.length, posted, clients.map(c => c.serverLabel));
     } catch (err) {
-      logger.error({ err }, 'scan failed');
+      logger.error({ err }, 'analysis failed');
     }
   };
 
-  // Run immediately on startup, then on schedule
   await runScan();
   cron.schedule(scanSchedule, () => { runScan(); });
   logger.info({ schedule: scanSchedule }, 'vigilo agent running');

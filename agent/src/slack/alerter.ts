@@ -14,11 +14,11 @@ export class SlackAlerter {
     this.client = new WebClient(token);
   }
 
-  async postSignal(signal: Signal, events: { resource: string; action: string; process?: string }[]): Promise<string> {
+  async postSignal(signal: Signal, events: { resource: string; action: string; process?: string; server?: string }[]): Promise<string> {
     const emoji = EMOJI[signal.severity];
     const evidence = events
       .slice(0, 3)
-      .map(e => `• \`${e.action}\` → \`${e.resource}\`${e.process ? ` (${e.process})` : ''}`)
+      .map(e => `• \`${e.action}\` → \`${e.resource}\`${e.process ? ` (${e.process})` : ''}${e.server ? ` [${e.server}]` : ''}`)
       .join('\n');
 
     const blocks: KnownBlock[] = [
@@ -49,11 +49,12 @@ export class SlackAlerter {
     return res.ts as string;
   }
 
-  async postScanSummary(eventsAnalyzed: number, signalCount: number): Promise<void> {
+  async postScanSummary(eventsAnalyzed: number, signalCount: number, servers: string[] = []): Promise<void> {
     if (signalCount > 0) return; // individual alerts already posted
+    const serverNote = servers.length > 1 ? ` across ${servers.length} servers` : '';
     await this.client.chat.postMessage({
       channel: this.channel,
-      text: `:white_check_mark: Vigilo scan — ${eventsAnalyzed} events, no threats detected`,
+      text: `:white_check_mark: Vigilo scan${serverNote} — ${eventsAnalyzed} events, no threats detected`,
     });
   }
 }
