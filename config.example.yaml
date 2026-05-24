@@ -1,0 +1,29 @@
+# sentinel daemon configuration
+
+# Paths to watch for sensitive file access.
+# Supports $HOME and other env var expansion.
+watch_paths:
+  - $HOME/.ethereum
+  - $HOME/.bitcoin
+  - /etc/sentinel/keys
+  - /run/secrets
+  - /app/.env
+  - /app/keystore
+
+# Paths to never watch (test fixtures, package caches, etc.)
+exclude_paths:
+  - $HOME/.npm
+  - $HOME/.cache
+  - /tmp
+
+# How often to poll /proc and network state
+poll_interval: 5s
+
+# Keep events in SQLite for this many hours (auto-purge after)
+buffer_retention_hours: 24
+
+# MCP server transport: "stdio" (default) or "http"
+mcp_transport: stdio
+
+# Only used when mcp_transport = "http"
+# mcp_addr: ":7070"
