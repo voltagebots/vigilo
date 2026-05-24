@@ -1,4 +1,4 @@
-import { WebClient } from '@slack/web-api';
+import { WebClient, type Block, type KnownBlock } from '@slack/web-api';
 import { Signal, Severity } from '../agents/analyst';
 
 const EMOJI: Record<Severity, string> = {
@@ -21,27 +21,29 @@ export class SlackAlerter {
       .map(e => `• \`${e.action}\` → \`${e.resource}\`${e.process ? ` (${e.process})` : ''}`)
       .join('\n');
 
+    const blocks: KnownBlock[] = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `${emoji} ${signal.title}`, emoji: true },
+      },
+      {
+        type: 'section',
+        fields: [
+          { type: 'mrkdwn' as const, text: `*Severity*\n${signal.severity.toUpperCase()}` },
+          { type: 'mrkdwn' as const, text: `*Category*\n${signal.category.replace(/_/g, ' ')}` },
+          { type: 'mrkdwn' as const, text: `*Detected*\n<!date^${Math.floor(signal.detectedAt.getTime() / 1000)}^{time_secs}|${signal.detectedAt.toISOString()}>` },
+          { type: 'mrkdwn' as const, text: `*Signal ID*\n\`${signal.id}\`` },
+        ],
+      },
+      { type: 'section', text: { type: 'mrkdwn' as const, text: `*What happened*\n${signal.description}` } },
+      ...(evidence ? [{ type: 'section' as const, text: { type: 'mrkdwn' as const, text: `*Evidence*\n${evidence}` } }] : []),
+      { type: 'section', text: { type: 'mrkdwn' as const, text: `*Action needed*\n${signal.suggestedAction}` } },
+    ];
+
     const res = await this.client.chat.postMessage({
       channel: this.channel,
       text: `${emoji} ${signal.title}`,
-      blocks: [
-        {
-          type: 'header',
-          text: { type: 'plain_text', text: `${emoji} ${signal.title}`, emoji: true },
-        },
-        {
-          type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: `*Severity*\n${signal.severity.toUpperCase()}` },
-            { type: 'mrkdwn', text: `*Category*\n${signal.category.replace(/_/g, ' ')}` },
-            { type: 'mrkdwn', text: `*Detected*\n<!date^${Math.floor(signal.detectedAt.getTime() / 1000)}^{time_secs}|${signal.detectedAt.toISOString()}>` },
-            { type: 'mrkdwn', text: `*Signal ID*\n\`${signal.id}\`` },
-          ],
-        },
-        { type: 'section', text: { type: 'mrkdwn', text: `*What happened*\n${signal.description}` } },
-        ...(evidence ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Evidence*\n${evidence}` } }] : []),
-        { type: 'section', text: { type: 'mrkdwn', text: `*Action needed*\n${signal.suggestedAction}` } },
-      ],
+      blocks,
     });
 
     return res.ts as string;
@@ -51,7 +53,7 @@ export class SlackAlerter {
     if (signalCount > 0) return; // individual alerts already posted
     await this.client.chat.postMessage({
       channel: this.channel,
-      text: `:white_check_mark: Sentinel scan — ${eventsAnalyzed} events, no threats detected`,
+      text: `:white_check_mark: Vigilo scan — ${eventsAnalyzed} events, no threats detected`,
     });
   }
 }

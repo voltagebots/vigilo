@@ -60,12 +60,13 @@ export class SentinelMCPClient {
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<SentinelEvent[]> {
-    // Remove undefined args
     const cleanArgs = Object.fromEntries(
       Object.entries(args).filter(([, v]) => v !== undefined),
     );
-    const result = await this.client.callTool({ name, arguments: cleanArgs });
-    const text = result.content[0]?.type === 'text' ? result.content[0].text : '[]';
+    type ToolContent = { type: string; text?: string };
+    const result = await this.client.callTool({ name, arguments: cleanArgs }) as { content: ToolContent[] };
+    const first = result.content[0];
+    const text = first?.type === 'text' ? (first.text ?? '[]') : '[]';
     try {
       return JSON.parse(text) ?? [];
     } catch {
