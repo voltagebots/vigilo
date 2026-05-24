@@ -1,3 +1,7 @@
+// Package mcp exposes the vigilo event buffer over the Model Context Protocol.
+// The daemon runs as an MCP server; the vigilo-agent (TypeScript) is the client.
+// Any MCP-compatible client — including Claude Desktop — can connect directly
+// to investigate events interactively.
 package mcp
 
 import (

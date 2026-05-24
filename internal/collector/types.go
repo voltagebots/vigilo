@@ -1,7 +1,10 @@
+// Package collector defines the Event type shared by all OS-level collectors
+// (FileWatcher, ProcessWatcher, NetworkWatcher) and consumed by the SQLite buffer.
 package collector
 
 import "time"
 
+// EventSource identifies which collector produced an event.
 type EventSource string
 
 const (

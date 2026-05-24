@@ -1,3 +1,6 @@
+// Package buffer persists collector events in a local SQLite database.
+// Events are auto-purged after buffer_retention_hours (default 24h).
+// The Store is the primary data source for the MCP server's query tools.
 package buffer
 
 import (
