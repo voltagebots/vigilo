@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: build & test
+  go:
+    name: go build & test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,3 +23,23 @@ jobs:
 
       - name: test
         run: go test ./... -race -timeout 60s
+
+  agent:
+    name: ts agent typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: agent/package-lock.json
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
