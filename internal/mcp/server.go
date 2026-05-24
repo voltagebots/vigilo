@@ -18,17 +18,30 @@ import (
 
 // Server wraps the MCP server and exposes query tools over the event buffer.
 type Server struct {
-	store  *buffer.Store
-	mcpSrv *server.MCPServer
+	store    *buffer.Store
+	mcpSrv   *server.MCPServer
+	handlers map[string]server.ToolHandlerFunc
 }
 
 func New(store *buffer.Store) *Server {
-	s := &Server{store: store}
+	s := &Server{
+		store:    store,
+		handlers: make(map[string]server.ToolHandlerFunc),
+	}
 	s.mcpSrv = server.NewMCPServer("vigilo", "0.1.0",
 		server.WithToolCapabilities(true),
 	)
 	s.registerTools()
 	return s
+}
+
+// CallTool invokes a registered tool by name. Used in tests and direct callers.
+func (s *Server) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	h, ok := s.handlers[req.Params.Name]
+	if !ok {
+		return nil, fmt.Errorf("tool %q not found", req.Params.Name)
+	}
+	return h(ctx, req)
 }
 
 // ServeStdio runs the MCP server over stdin/stdout (default transport).
@@ -42,35 +55,40 @@ func (s *Server) ServeSSE(addr string) error {
 	return sse.Start(addr)
 }
 
+func (s *Server) addTool(tool mcp.Tool, h server.ToolHandlerFunc) {
+	s.mcpSrv.AddTool(tool, h)
+	s.handlers[tool.Name] = h
+}
+
 func (s *Server) registerTools() {
-	s.mcpSrv.AddTool(mcp.NewTool("get_file_access_events",
+	s.addTool(mcp.NewTool("get_file_access_events",
 		mcp.WithDescription("Return file access events for sensitive paths (keystores, .env, private keys) in the given time window."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp — return events after this time")),
 		mcp.WithNumber("limit", mcp.Description("Max events to return (default 100)")),
 		mcp.WithString("severity", mcp.Description("Minimum severity: info|medium|high|critical")),
 	), s.handleFileEvents)
 
-	s.mcpSrv.AddTool(mcp.NewTool("get_process_events",
+	s.addTool(mcp.NewTool("get_process_events",
 		mcp.WithDescription("Return suspicious process spawn events (e.g. shell spawned from node, curl from python)."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
 		mcp.WithNumber("limit", mcp.Description("Max events to return (default 100)")),
 	), s.handleProcessEvents)
 
-	s.mcpSrv.AddTool(mcp.NewTool("get_network_events",
+	s.addTool(mcp.NewTool("get_network_events",
 		mcp.WithDescription("Return outbound network connection events to unexpected or suspicious destinations."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
 		mcp.WithNumber("limit", mcp.Description("Max events to return (default 100)")),
 		mcp.WithString("severity", mcp.Description("Minimum severity: info|medium|high|critical")),
 	), s.handleNetworkEvents)
 
-	s.mcpSrv.AddTool(mcp.NewTool("get_all_events",
+	s.addTool(mcp.NewTool("get_all_events",
 		mcp.WithDescription("Return all events across all sources in the given window. Use for correlation analysis."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
 		mcp.WithNumber("limit", mcp.Description("Max events to return (default 200)")),
 		mcp.WithString("severity", mcp.Description("Minimum severity filter")),
 	), s.handleAllEvents)
 
-	s.mcpSrv.AddTool(mcp.NewTool("get_critical_events",
+	s.addTool(mcp.NewTool("get_critical_events",
 		mcp.WithDescription("Return only critical and high severity events. Use for rapid triage."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
 	), s.handleCriticalEvents)
