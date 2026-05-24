@@ -1,7 +1,7 @@
 {
-  "name": "sentinel-agent",
+  "name": "vigilo-agent",
   "version": "0.1.0",
-  "description": "LLM analyst agent — connects to sentinel daemon via MCP, detects attack patterns, alerts",
+  "description": "LLM analyst agent — connects to vigilo daemon via MCP, detects attack patterns, alerts",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

@@ -8,8 +8,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/voltagebots/sentinel/internal/buffer"
-	"github.com/voltagebots/sentinel/internal/collector"
+	"github.com/voltagebots/vigilo/internal/buffer"
+	"github.com/voltagebots/vigilo/internal/collector"
 )
 
 // Server wraps the MCP server and exposes query tools over the event buffer.
@@ -20,7 +20,7 @@ type Server struct {
 
 func New(store *buffer.Store) *Server {
 	s := &Server{store: store}
-	s.mcpSrv = server.NewMCPServer("sentinel", "0.1.0",
+	s.mcpSrv = server.NewMCPServer("vigilo", "0.1.0",
 		server.WithToolCapabilities(true),
 	)
 	s.registerTools()

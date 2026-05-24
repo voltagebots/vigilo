@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/voltagebots/sentinel/internal/collector"
+	"github.com/voltagebots/vigilo/internal/collector"
 	_ "modernc.org/sqlite"
 )
 

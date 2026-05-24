@@ -20,23 +20,23 @@ function requireEnv(key: string): string {
 
 async function main() {
   const slackToken    = requireEnv('SLACK_BOT_TOKEN');
-  const alertChannel  = requireEnv('SENTINEL_ALERT_CHANNEL');
+  const alertChannel  = requireEnv('VIGILO_ALERT_CHANNEL');
   const scanSchedule  = process.env.SCAN_CRON ?? '*/5 * * * *'; // every 5 min default
   const lookbackMins  = parseInt(process.env.LOOKBACK_MINUTES ?? '6');
 
   // MCP transport: stdio (local daemon) or http (remote)
-  const transport: MCPTransport = process.env.SENTINEL_MCP_URL
-    ? { type: 'http', url: process.env.SENTINEL_MCP_URL }
+  const transport: MCPTransport = process.env.VIGILO_MCP_URL
+    ? { type: 'http', url: process.env.VIGILO_MCP_URL }
     : {
         type: 'stdio',
-        command: process.env.SENTINEL_DAEMON_BIN ?? 'sentinel',
-        args: ['-config', process.env.SENTINEL_CONFIG ?? '/etc/sentinel/config.yaml'],
+        command: process.env.VIGILO_DAEMON_BIN ?? 'vigilo',
+        args: ['-config', process.env.VIGILO_CONFIG ?? '/etc/vigilo/config.yaml'],
       };
 
   const mcpClient = new SentinelMCPClient();
   const alerter   = new SlackAlerter(slackToken, alertChannel);
 
-  logger.info({ transport: transport.type }, 'connecting to sentinel daemon via MCP');
+  logger.info({ transport: transport.type }, 'connecting to vigilo daemon via MCP');
   await mcpClient.connect(transport);
 
   const runScan = async () => {
@@ -72,7 +72,7 @@ async function main() {
   // Run immediately on startup, then on schedule
   await runScan();
   cron.schedule(scanSchedule, () => { runScan(); });
-  logger.info({ schedule: scanSchedule }, 'sentinel agent running');
+  logger.info({ schedule: scanSchedule }, 'vigilo agent running');
 }
 
 main().catch(err => {

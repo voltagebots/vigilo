@@ -35,7 +35,7 @@ var Defaults = Config{
 	WatchPaths: []string{
 		"$HOME/.ethereum",
 		"$HOME/.bitcoin",
-		"/etc/sentinel/keys",
+		"/etc/vigilo/keys",
 		"/run/secrets",
 	},
 	PollInterval:         5 * time.Second,

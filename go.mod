@@ -1,4 +1,4 @@
-module github.com/voltagebots/sentinel
+module github.com/voltagebots/vigilo
 
 go 1.23
 

@@ -1,11 +1,11 @@
-# sentinel daemon configuration
+# vigilo daemon configuration
 
 # Paths to watch for sensitive file access.
 # Supports $HOME and other env var expansion.
 watch_paths:
   - $HOME/.ethereum
   - $HOME/.bitcoin
-  - /etc/sentinel/keys
+  - /etc/vigilo/keys
   - /run/secrets
   - /app/.env
   - /app/keystore

@@ -25,7 +25,7 @@ export class SentinelMCPClient {
   private client: Client;
 
   constructor() {
-    this.client = new Client({ name: 'sentinel-agent', version: '0.1.0' });
+    this.client = new Client({ name: 'vigilo-agent', version: '0.1.0' });
   }
 
   async connect(transport: MCPTransport): Promise<void> {
