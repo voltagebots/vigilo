@@ -37,14 +37,20 @@ type connKey struct {
 // NetworkWatcher polls /proc/net/tcp(6) for new outbound connections.
 type NetworkWatcher struct {
 	interval time.Duration
+	suppress *SuppressMatcher
 	out      chan<- Event
 	seen     map[connKey]struct{}
 	stop     chan struct{}
 }
 
-func NewNetworkWatcher(interval time.Duration, out chan<- Event) *NetworkWatcher {
+func NewNetworkWatcher(interval time.Duration, out chan<- Event, suppress ...*SuppressMatcher) *NetworkWatcher {
+	var sm *SuppressMatcher
+	if len(suppress) > 0 {
+		sm = suppress[0]
+	}
 	return &NetworkWatcher{
 		interval: interval,
+		suppress: sm,
 		out:      out,
 		seen:     make(map[connKey]struct{}),
 		stop:     make(chan struct{}),
@@ -116,13 +122,16 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 		return // safe port, skip
 	}
 
-	nw.out <- Event{
+	e := Event{
 		Source:    SourceNetwork,
 		Timestamp: time.Now(),
 		Action:    "connect",
 		Resource:  fmt.Sprintf("%s:%d", c.remoteIP, c.remotePort),
 		Detail:    detail,
 		Severity:  sev,
+	}
+	if !nw.suppress.IsSuppressed(e) {
+		nw.out <- e
 	}
 }
 

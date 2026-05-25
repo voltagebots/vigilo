@@ -70,6 +70,19 @@ alerter:
   #   - name: internal-siem
   #     url: https://siem.internal/api/events
 
+# ── auditd integration (Linux only) ──────────────────────────────────────────
+# Tails /var/log/audit/audit.log for kernel-level syscall events.
+# Richer than /proc polling — captures every file-open, exec, delete, rename.
+# Requires: vigilo user in the adm group (or run as root).
+# Only processes events matching audit rules with a "vigilo_" key prefix.
+#
+# Set up audit rules (run as root):
+#   auditctl -w /app/keystore -p rwa -k vigilo_keystore
+#   auditctl -w /run/secrets  -p rwa -k vigilo_secrets
+#   auditctl -w /app/.env     -p wa  -k vigilo_env
+#
+# auditd_log_path: /var/log/audit/audit.log
+
 # ── Suppression rules ─────────────────────────────────────────────────────────
 # Events matching any rule are dropped before reaching the buffer.
 suppress_rules:

@@ -73,15 +73,25 @@ func main() {
 		defer fileWatcher.Stop()
 	}
 
-	procWatcher := collector.NewProcessWatcher(cfg.PollInterval, events)
+	procWatcher := collector.NewProcessWatcher(cfg.PollInterval, events, suppress)
 	procWatcher.Start()
 	defer procWatcher.Stop()
 	slog.Info("process watcher started", "interval", cfg.PollInterval)
 
-	netWatcher := collector.NewNetworkWatcher(cfg.PollInterval, events)
+	netWatcher := collector.NewNetworkWatcher(cfg.PollInterval, events, suppress)
 	netWatcher.Start()
 	defer netWatcher.Stop()
 	slog.Info("network watcher started", "interval", cfg.PollInterval)
+
+	if cfg.AuditdLogPath != "" {
+		auditWatcher := collector.NewAuditdWatcher(cfg.AuditdLogPath, events, suppress)
+		if err := auditWatcher.Start(); err != nil {
+			slog.Warn("auditd watcher unavailable", "path", cfg.AuditdLogPath, "err", err)
+		} else {
+			slog.Info("auditd watcher started", "path", cfg.AuditdLogPath)
+			defer auditWatcher.Stop()
+		}
+	}
 
 	// Drain event bus → SQLite + immediate alerter
 	go func() {

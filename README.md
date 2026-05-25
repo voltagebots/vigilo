@@ -207,9 +207,10 @@ suppress_rules:
 - [x] File watcher (fsnotify, macOS + Linux)
 - [x] Process watcher (Linux `/proc` polling)
 - [x] Network watcher (Linux `/proc/net/tcp`)
+- [x] `auditd` collector — tails audit log, kernel-level syscall events (opt-in)
 - [x] SQLite event buffer with hourly auto-prune
 - [x] Signal dedup table (per-category cooldown)
-- [x] Suppression rules (config-driven, zero-noise at source)
+- [x] Suppression rules — all three collectors (file, process, network)
 - [x] MCP server — stdio and SSE/HTTP transports
 - [x] Immediate alerter — Slack webhook, Telegram Bot, SMTP email, generic webhook
 - [x] LLM analyst agent (Claude Opus) — multi-step pattern detection
@@ -217,16 +218,15 @@ suppress_rules:
 - [x] Goose patterns: context compaction, MOIM preamble, inspector + retry
 - [x] Signal dedup in agent (in-process cooldown cache)
 - [x] CI (GitHub Actions — Go build/test + TypeScript typecheck)
-- [x] Dockerfile (multi-stage alpine)
+- [x] Dockerfile — daemon (alpine) + agent (node:22-alpine)
+- [x] Docker Compose — daemon + agent, single `docker compose up`
+- [x] systemd unit (`deploy/vigilo.service`) + `deploy/install.sh`
 
 ## Roadmap
 
-- [ ] `auditd` integration — kernel syscall audit, richer than `/proc` polling
-- [ ] Suppression rules for process and network collectors (file only today)
 - [ ] Daemon-side signal dedup (currently agent-side only)
-- [ ] systemd unit file committed to repo
-- [ ] Docker Compose (daemon + agent)
 - [ ] Tailscale deployment guide
 - [ ] PagerDuty / OpsGenie native integration
 - [ ] Web UI — event timeline, signal history
 - [ ] Structured SIEM output (CEF / ECS format)
+- [ ] macOS: replace `/proc` watchers with `libproc` / `netstat` equivalents
