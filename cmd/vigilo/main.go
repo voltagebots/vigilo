@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/voltagebots/vigilo/internal/alerter"
@@ -50,9 +52,10 @@ func main() {
 		Telegram:    toAlertTelegram(cfg.Alerter.Telegram),
 		Email:       toAlertEmail(cfg.Alerter.Email),
 		Webhooks:    toAlertWebhooks(cfg.Alerter.Webhooks),
+		Syslog:      toAlertSyslog(cfg.Alerter.Syslog),
 	})
 
-	// Event bus — buffered to avoid blocking collectors
+	// Event bus — buffered to avoid blocking collectors.
 	events := make(chan collector.Event, 512)
 
 	// Open SQLite buffer
@@ -61,6 +64,10 @@ func main() {
 		slog.Error("failed to open event store", "err", err)
 		os.Exit(1)
 	}
+
+	// Context wired to OS signals — collectors and server shut down on cancel.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	// Start collectors
 	fileWatcher, err := collector.NewFileWatcher(cfg.WatchPaths, cfg.ExcludePaths, events, suppress)
@@ -95,8 +102,26 @@ func main() {
 		}
 	}
 
-	// Drain event bus → SQLite + immediate alerter
+	// Web dashboard (optional)
+	var webSrv *web.Server
+	webEnabled := cfg.WebAddr != ""
+	if webEnabled {
+		webSrv = web.New(store, web.Config{Token: cfg.WebToken})
+		go func() {
+			slog.Info("web dashboard listening", "addr", cfg.WebAddr)
+			if err := webSrv.Listen(ctx, cfg.WebAddr); err != nil && ctx.Err() == nil {
+				slog.Error("web dashboard error", "err", err)
+			}
+		}()
+	}
+
+	// Drain event bus → SQLite + immediate alerter.
+	// WaitGroup ensures all events are flushed before store.Close().
+	var drainWg sync.WaitGroup
+	var eventsDropped uint64
+	drainWg.Add(1)
 	go func() {
+		defer drainWg.Done()
 		for e := range events {
 			if err := store.Insert(e); err != nil {
 				slog.Error("failed to insert event", "err", err)
@@ -108,29 +133,26 @@ func main() {
 				"resource", e.Resource,
 				"severity", e.Severity,
 			)
-			// Tier-1: fire immediately for high/critical events
+			// Broadcast to SSE subscribers if web is enabled.
+			if webEnabled {
+				webSrv.Broadcast(e)
+			}
+			// Tier-1: fire immediately for high/critical events.
 			if dispatch.ShouldAlert(e) {
-				go dispatch.Fire(e)
+				go func(ev collector.Event) {
+					dispatch.Fire(ev)
+					// Keep expvar metrics in sync with alerter counters.
+					if webEnabled {
+						s := dispatch.Stats()
+						webSrv.SetAlertCounters(s.AlertsSent, s.AlertsDropped)
+					}
+				}(e)
 			}
 		}
 	}()
 
-	// Web dashboard (optional)
-	if cfg.WebAddr != "" {
-		webSrv := web.New(store)
-		go func() {
-			slog.Info("web dashboard listening", "addr", cfg.WebAddr)
-			if err := webSrv.Listen(cfg.WebAddr); err != nil {
-				slog.Error("web dashboard error", "err", err)
-			}
-		}()
-	}
-
 	// MCP server
 	mcpServer := vigilomcp.New(store)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	slog.Info("vigilo daemon ready",
 		"mcp_transport", cfg.MCPTransport,
@@ -156,6 +178,16 @@ func main() {
 			slog.Error("MCP stdio server error", "err", err)
 			os.Exit(1)
 		}
+	}
+
+	// Graceful shutdown: close events channel, wait for drain, close store.
+	close(events)
+	drainWg.Wait()
+	if dropped := atomic.LoadUint64(&eventsDropped); dropped > 0 {
+		slog.Warn("events dropped during shutdown", "count", dropped)
+	}
+	if err := store.Close(); err != nil {
+		slog.Warn("store close error", "err", err)
 	}
 
 	slog.Info("vigilo daemon stopped")
@@ -197,4 +229,11 @@ func toAlertWebhooks(ws []config.WebhookConfig) []alerter.WebhookConfig {
 		out[i] = alerter.WebhookConfig{Name: w.Name, URL: w.URL, Headers: w.Headers}
 	}
 	return out
+}
+
+func toAlertSyslog(c *config.SyslogConfig) *alerter.SyslogConfig {
+	if c == nil {
+		return nil
+	}
+	return &alerter.SyslogConfig{Enabled: c.Enabled}
 }

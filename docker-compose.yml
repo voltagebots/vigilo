@@ -23,16 +23,10 @@ services:
     restart: unless-stopped
     depends_on:
       - daemon
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      VIGILO_ALERT_CHANNEL: ${VIGILO_ALERT_CHANNEL}
-      VIGILO_MCP_URL: http://daemon:7070
-      SCAN_CRON: ${SCAN_CRON:-"*/5 * * * *"}
-      LOOKBACK_MINUTES: ${LOOKBACK_MINUTES:-6}
-      SIGNAL_COOLDOWN_MS: ${SIGNAL_COOLDOWN_MS:-3600000}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      NODE_ENV: production
+    # Secrets are loaded from agent/.env — never hardcode them here.
+    # Required vars: ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, VIGILO_ALERT_CHANNEL
+    # Optional vars: VIGILO_MCP_URL, SCAN_CRON, LOOKBACK_MINUTES, SIGNAL_COOLDOWN_MS
+    # Copy agent/.env.example to agent/.env and fill in real values.
     env_file:
       - agent/.env
 

@@ -19,27 +19,29 @@ type TelegramConfig struct {
 }
 
 type telegramChannel struct {
-	cfg *TelegramConfig
+	cfg    *TelegramConfig
+	client *http.Client
 }
 
-func newTelegramChannel(cfg *TelegramConfig) *telegramChannel { return &telegramChannel{cfg: cfg} }
-func (t *telegramChannel) name() string                        { return "telegram" }
+func newTelegramChannel(cfg *TelegramConfig, client *http.Client) *telegramChannel {
+	return &telegramChannel{cfg: cfg, client: client}
+}
+func (t *telegramChannel) name() string { return "telegram" }
 
 func (t *telegramChannel) send(e collector.Event, _ string) error {
-	emoji := severityEmoji(e.Severity)
 	sev := strings.ToUpper(string(e.Severity))
 
 	lines := []string{
-		fmt.Sprintf("%s <b>Vigilo Alert — %s</b>", emoji, sev),
-		fmt.Sprintf("🔎 <b>Source:</b> %s", e.Source),
-		fmt.Sprintf("⚡ <b>Action:</b> <code>%s</code>", e.Action),
-		fmt.Sprintf("📁 <b>Resource:</b> <code>%s</code>", e.Resource),
+		fmt.Sprintf("<b>Vigilo Alert -- %s</b>", sev),
+		fmt.Sprintf("<b>Source:</b> %s", e.Source),
+		fmt.Sprintf("<b>Action:</b> <code>%s</code>", e.Action),
+		fmt.Sprintf("<b>Resource:</b> <code>%s</code>", e.Resource),
 	}
 	if e.Process != "" {
-		lines = append(lines, fmt.Sprintf("⚙️ <b>Process:</b> <code>%s</code> (pid %d)", e.Process, e.PID))
+		lines = append(lines, fmt.Sprintf("<b>Process:</b> <code>%s</code> (pid %d)", e.Process, e.PID))
 	}
 	if e.Detail != "" {
-		lines = append(lines, fmt.Sprintf("📝 <b>Detail:</b> %s", e.Detail))
+		lines = append(lines, fmt.Sprintf("<b>Detail:</b> %s", e.Detail))
 	}
 	text := strings.Join(lines, "\n")
 
@@ -51,7 +53,7 @@ func (t *telegramChannel) send(e collector.Event, _ string) error {
 	b, _ := json.Marshal(payload)
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.cfg.BotToken)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	resp, err := t.client.Post(url, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}

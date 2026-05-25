@@ -1,6 +1,6 @@
 module github.com/voltagebots/vigilo
 
-go 1.23
+go 1.25.0
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0
@@ -18,6 +18,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.19.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.49.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

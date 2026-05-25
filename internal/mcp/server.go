@@ -101,13 +101,24 @@ func (s *Server) registerTools() {
 	), s.handleECSEvents)
 }
 
-func parseSince(args map[string]any) time.Time {
+// parseSinceResult parses the "since" argument. Returns (time, "") on success
+// or (zero, errMsg) when the string is present but invalid RFC3339.
+func parseSinceResult(args map[string]any) (time.Time, string) {
 	sinceStr, _ := args["since"].(string)
 	if sinceStr == "" {
-		return time.Now().Add(-time.Hour)
+		return time.Now().Add(-time.Hour), ""
 	}
 	t, err := time.Parse(time.RFC3339, sinceStr)
 	if err != nil {
+		return time.Time{}, "invalid 'since' — expected RFC3339 timestamp"
+	}
+	return t, ""
+}
+
+// parseSince is kept for callers that don't need error propagation.
+func parseSince(args map[string]any) time.Time {
+	t, _ := parseSinceResult(args)
+	if t.IsZero() {
 		return time.Now().Add(-time.Hour)
 	}
 	return t
@@ -115,7 +126,11 @@ func parseSince(args map[string]any) time.Time {
 
 func parseLimit(args map[string]any, def int) int {
 	if v, ok := args["limit"].(float64); ok && v > 0 {
-		return int(v)
+		n := int(v)
+		if n > 1000 {
+			n = 1000
+		}
+		return n
 	}
 	return def
 }
@@ -147,8 +162,12 @@ func (s *Server) queryAndRespond(opts buffer.QueryOptions) (*mcp.CallToolResult,
 }
 
 func (s *Server) handleFileEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	return s.queryAndRespond(buffer.QueryOptions{
-		Since:    parseSince(req.Params.Arguments),
+		Since:    since,
 		Sources:  []string{string(collector.SourceFile)},
 		Severity: parseSeverity(req.Params.Arguments),
 		Limit:    parseLimit(req.Params.Arguments, 100),
@@ -156,16 +175,24 @@ func (s *Server) handleFileEvents(_ context.Context, req mcp.CallToolRequest) (*
 }
 
 func (s *Server) handleProcessEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	return s.queryAndRespond(buffer.QueryOptions{
-		Since:   parseSince(req.Params.Arguments),
+		Since:   since,
 		Sources: []string{string(collector.SourceProcess)},
 		Limit:   parseLimit(req.Params.Arguments, 100),
 	})
 }
 
 func (s *Server) handleNetworkEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	return s.queryAndRespond(buffer.QueryOptions{
-		Since:    parseSince(req.Params.Arguments),
+		Since:    since,
 		Sources:  []string{string(collector.SourceNetwork)},
 		Severity: parseSeverity(req.Params.Arguments),
 		Limit:    parseLimit(req.Params.Arguments, 100),
@@ -173,16 +200,24 @@ func (s *Server) handleNetworkEvents(_ context.Context, req mcp.CallToolRequest)
 }
 
 func (s *Server) handleAllEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	return s.queryAndRespond(buffer.QueryOptions{
-		Since:    parseSince(req.Params.Arguments),
+		Since:    since,
 		Severity: parseSeverity(req.Params.Arguments),
 		Limit:    parseLimit(req.Params.Arguments, 200),
 	})
 }
 
 func (s *Server) handleCriticalEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	return s.queryAndRespond(buffer.QueryOptions{
-		Since:    parseSince(req.Params.Arguments),
+		Since:    since,
 		Severity: "high",
 		Limit:    50,
 	})
@@ -215,8 +250,12 @@ type ecsNetwork struct{ DestinationIP string `json:"destination_ip"` }
 type ecsUser    struct{ ID string `json:"id,omitempty"` }
 
 func (s *Server) handleECSEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	since, errMsg := parseSinceResult(req.Params.Arguments)
+	if errMsg != "" {
+		return errorResult(errMsg)
+	}
 	events, err := s.store.List(buffer.QueryOptions{
-		Since:    parseSince(req.Params.Arguments),
+		Since:    since,
 		Severity: parseSeverity(req.Params.Arguments),
 		Limit:    parseLimit(req.Params.Arguments, 500),
 	})

@@ -3,6 +3,7 @@ package alerter
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
@@ -56,14 +57,56 @@ func (ec *emailChannel) send(ev collector.Event, body string) error {
 	if port == 465 {
 		return ec.sendTLS(addr, auth, msg)
 	}
-	return smtp.SendMail(addr, auth, ec.cfg.From, ec.cfg.To, []byte(msg))
+
+	// Dial with 15s timeout before handing off to smtp.SendMail.
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial: %w", err)
+	}
+	c, err := smtp.NewClient(conn, ec.cfg.SMTPHost)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("smtp new client: %w", err)
+	}
+	defer c.Close()
+
+	if err = c.StartTLS(&tls.Config{ServerName: ec.cfg.SMTPHost}); err != nil {
+		return fmt.Errorf("smtp starttls: %w", err)
+	}
+	if err = c.Auth(auth); err != nil {
+		return fmt.Errorf("smtp auth: %w", err)
+	}
+	if err = c.Mail(ec.cfg.From); err != nil {
+		return err
+	}
+	for _, to := range ec.cfg.To {
+		if err = c.Rcpt(to); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err = fmt.Fprint(w, msg); err != nil {
+		return err
+	}
+	return w.Close()
 }
 
 func (ec *emailChannel) sendTLS(addr string, auth smtp.Auth, msg string) error {
-	tlsCfg := &tls.Config{ServerName: ec.cfg.SMTPHost}
-	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	rawConn, err := dialer.Dial("tcp", addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("smtp tls dial: %w", err)
+	}
+
+	tlsCfg := &tls.Config{ServerName: ec.cfg.SMTPHost}
+	conn := tls.Client(rawConn, tlsCfg)
+	if err := conn.Handshake(); err != nil {
+		rawConn.Close()
+		return fmt.Errorf("smtp tls handshake: %w", err)
 	}
 	defer conn.Close()
 
