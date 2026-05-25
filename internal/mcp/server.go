@@ -92,6 +92,13 @@ func (s *Server) registerTools() {
 		mcp.WithDescription("Return only critical and high severity events. Use for rapid triage."),
 		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
 	), s.handleCriticalEvents)
+
+	s.addTool(mcp.NewTool("get_events_ecs",
+		mcp.WithDescription("Return events formatted as Elastic Common Schema (ECS) JSON. Use for SIEM ingestion, Elasticsearch, or structured log pipelines."),
+		mcp.WithString("since", mcp.Required(), mcp.Description("ISO8601 timestamp")),
+		mcp.WithNumber("limit", mcp.Description("Max events (default 500)")),
+		mcp.WithString("severity", mcp.Description("Minimum severity filter")),
+	), s.handleECSEvents)
 }
 
 func parseSince(args map[string]any) time.Time {
@@ -179,4 +186,83 @@ func (s *Server) handleCriticalEvents(_ context.Context, req mcp.CallToolRequest
 		Severity: "high",
 		Limit:    50,
 	})
+}
+
+// ecsEvent is a minimal Elastic Common Schema representation of a vigilo event.
+type ecsEvent struct {
+	Timestamp string         `json:"@timestamp"`
+	Event     ecsEventFields `json:"event"`
+	File      *ecsFile       `json:"file,omitempty"`
+	Process   *ecsProcess    `json:"process,omitempty"`
+	Network   *ecsNetwork    `json:"network,omitempty"`
+	User      *ecsUser       `json:"user,omitempty"`
+	Labels    map[string]string `json:"labels"`
+}
+type ecsEventFields struct {
+	Kind     string   `json:"kind"`
+	Category []string `json:"category"`
+	Action   string   `json:"action"`
+	Severity string   `json:"severity"`
+}
+type ecsFile    struct{ Path string `json:"path"` }
+type ecsProcess struct {
+	Name string `json:"name,omitempty"`
+	PID  int    `json:"pid,omitempty"`
+	PPID int    `json:"parent,omitempty"`
+	Args string `json:"command_line,omitempty"`
+}
+type ecsNetwork struct{ DestinationIP string `json:"destination_ip"` }
+type ecsUser    struct{ ID string `json:"id,omitempty"` }
+
+func (s *Server) handleECSEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	events, err := s.store.List(buffer.QueryOptions{
+		Since:    parseSince(req.Params.Arguments),
+		Severity: parseSeverity(req.Params.Arguments),
+		Limit:    parseLimit(req.Params.Arguments, 500),
+	})
+	if err != nil {
+		return errorResult(fmt.Sprintf("query error: %v", err))
+	}
+
+	out := make([]ecsEvent, 0, len(events))
+	for _, e := range events {
+		ev := ecsEvent{
+			Timestamp: e.Timestamp.UTC().Format(time.RFC3339Nano),
+			Event: ecsEventFields{
+				Kind:     "event",
+				Action:   e.Action,
+				Severity: string(e.Severity),
+			},
+			Labels: map[string]string{
+				"vigilo_source":   string(e.Source),
+				"vigilo_severity": string(e.Severity),
+			},
+		}
+		switch e.Source {
+		case collector.SourceFile:
+			ev.Event.Category = []string{"file"}
+			ev.File = &ecsFile{Path: e.Resource}
+		case collector.SourceProcess:
+			ev.Event.Category = []string{"process"}
+			ev.Process = &ecsProcess{
+				Name: e.Process, PID: e.PID, PPID: e.PPID, Args: e.CmdLine,
+			}
+		case collector.SourceNetwork:
+			ev.Event.Category = []string{"network"}
+			ev.Network = &ecsNetwork{DestinationIP: e.Resource}
+		}
+		if e.User != "" {
+			ev.User = &ecsUser{ID: e.User}
+		}
+		if e.Process != "" && ev.Process == nil {
+			ev.Process = &ecsProcess{Name: e.Process, PID: e.PID}
+		}
+		out = append(out, ev)
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return errorResult("serialization error")
+	}
+	return mcp.NewToolResultText(string(b)), nil
 }

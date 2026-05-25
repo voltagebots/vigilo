@@ -13,6 +13,7 @@ import (
 	"github.com/voltagebots/vigilo/internal/collector"
 	"github.com/voltagebots/vigilo/internal/config"
 	vigilomcp "github.com/voltagebots/vigilo/internal/mcp"
+	"github.com/voltagebots/vigilo/internal/web"
 )
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 	// Build immediate alerter from config
 	dispatch := alerter.New(alerter.Config{
 		MinSeverity: cfg.Alerter.MinSeverity,
+		Cooldown:    cfg.SignalCooldown,
 		Slack:       toAlertSlack(cfg.Alerter.Slack),
 		Telegram:    toAlertTelegram(cfg.Alerter.Telegram),
 		Email:       toAlertEmail(cfg.Alerter.Email),
@@ -112,6 +114,17 @@ func main() {
 			}
 		}
 	}()
+
+	// Web dashboard (optional)
+	if cfg.WebAddr != "" {
+		webSrv := web.New(store)
+		go func() {
+			slog.Info("web dashboard listening", "addr", cfg.WebAddr)
+			if err := webSrv.Listen(cfg.WebAddr); err != nil {
+				slog.Error("web dashboard error", "err", err)
+			}
+		}()
+	}
 
 	// MCP server
 	mcpServer := vigilomcp.New(store)

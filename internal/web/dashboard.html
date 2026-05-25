@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vigilo</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+  header{background:#1a1d27;border-bottom:1px solid #2d3148;padding:1rem 1.5rem;display:flex;align-items:center;gap:1rem}
+  header h1{font-size:1.25rem;font-weight:600;letter-spacing:.05em}
+  header h1 span{color:#6366f1}
+  .badge{background:#6366f1;color:#fff;border-radius:9999px;font-size:.7rem;padding:.2rem .5rem;font-weight:700}
+  .status{margin-left:auto;font-size:.8rem;color:#64748b}
+  .stats{display:flex;gap:1rem;padding:1rem 1.5rem;border-bottom:1px solid #1e2133}
+  .stat{background:#1a1d27;border:1px solid #2d3148;border-radius:.5rem;padding:.75rem 1.25rem;flex:1;text-align:center}
+  .stat-num{font-size:1.75rem;font-weight:700;line-height:1}
+  .stat-label{font-size:.7rem;color:#64748b;margin-top:.25rem;text-transform:uppercase;letter-spacing:.05em}
+  .critical .stat-num{color:#ef4444}
+  .high .stat-num{color:#f97316}
+  .medium .stat-num{color:#eab308}
+  .info .stat-num{color:#3b82f6}
+  .filters{padding:.75rem 1.5rem;display:flex;gap:.5rem;border-bottom:1px solid #1e2133;flex-wrap:wrap}
+  .filter-btn{background:#1a1d27;border:1px solid #2d3148;color:#94a3b8;border-radius:.375rem;padding:.3rem .75rem;font-size:.8rem;cursor:pointer;transition:all .15s}
+  .filter-btn:hover,.filter-btn.active{background:#6366f1;border-color:#6366f1;color:#fff}
+  .filter-btn.sev-critical.active{background:#ef4444;border-color:#ef4444}
+  .filter-btn.sev-high.active{background:#f97316;border-color:#f97316}
+  .filter-btn.sev-medium.active{background:#eab308;border-color:#eab308}
+  .filter-btn.sev-info.active{background:#3b82f6;border-color:#3b82f6}
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th{background:#1a1d27;padding:.6rem 1rem;text-align:left;font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#64748b;position:sticky;top:0}
+  td{padding:.6rem 1rem;border-bottom:1px solid #1a1d27;vertical-align:middle}
+  tr:hover td{background:#1a1d27}
+  .sev{display:inline-block;border-radius:.25rem;padding:.15rem .5rem;font-size:.7rem;font-weight:700;text-transform:uppercase}
+  .sev-critical{background:#7f1d1d;color:#fca5a5}
+  .sev-high{background:#7c2d12;color:#fdba74}
+  .sev-medium{background:#713f12;color:#fde68a}
+  .sev-info{background:#1e3a5f;color:#93c5fd}
+  .src{background:#1e2133;border-radius:.25rem;padding:.1rem .4rem;font-size:.7rem;color:#94a3b8}
+  code{background:#1e2133;border-radius:.2rem;padding:.05rem .3rem;font-family:monospace;font-size:.8em;word-break:break-all}
+  .empty{text-align:center;padding:3rem;color:#475569}
+  .table-wrap{overflow-x:auto;max-height:calc(100vh - 220px);overflow-y:auto}
+</style>
+</head>
+<body>
+<header>
+  <h1><span>⬡</span> Vigilo</h1>
+  <span class="badge">LIVE</span>
+  <span class="status" id="status">Loading…</span>
+</header>
+<div class="stats">
+  <div class="stat critical"><div class="stat-num" id="cnt-critical">0</div><div class="stat-label">Critical</div></div>
+  <div class="stat high"><div class="stat-num" id="cnt-high">0</div><div class="stat-label">High</div></div>
+  <div class="stat medium"><div class="stat-num" id="cnt-medium">0</div><div class="stat-label">Medium</div></div>
+  <div class="stat info"><div class="stat-num" id="cnt-info">0</div><div class="stat-label">Info</div></div>
+  <div class="stat"><div class="stat-num" id="cnt-total">0</div><div class="stat-label">Total (1h)</div></div>
+</div>
+<div class="filters">
+  <span style="font-size:.8rem;color:#64748b;align-self:center">Source:</span>
+  <button class="filter-btn active" data-src="">All</button>
+  <button class="filter-btn" data-src="file_access">File</button>
+  <button class="filter-btn" data-src="process">Process</button>
+  <button class="filter-btn" data-src="network">Network</button>
+  <span style="font-size:.8rem;color:#64748b;align-self:center;margin-left:.5rem">Severity:</span>
+  <button class="filter-btn sev-critical" data-sev="critical">Critical</button>
+  <button class="filter-btn sev-high" data-sev="high">High</button>
+  <button class="filter-btn sev-medium" data-sev="medium">Medium</button>
+  <button class="filter-btn sev-info" data-sev="info">Info</button>
+</div>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Time</th><th>Severity</th><th>Source</th><th>Action</th><th>Resource</th><th>Process</th></tr>
+  </thead>
+  <tbody id="events-body">
+    <tr><td colspan="6" class="empty">Loading events…</td></tr>
+  </tbody>
+</table>
+</div>
+<script>
+let allEvents = [];
+let srcFilter = '';
+let sevFilter = '';
+
+document.querySelectorAll('[data-src]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-src]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    srcFilter = btn.dataset.src;
+    render();
+  });
+});
+document.querySelectorAll('[data-sev]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const wasActive = btn.classList.contains('active');
+    document.querySelectorAll('[data-sev]').forEach(b => b.classList.remove('active'));
+    if (!wasActive) { btn.classList.add('active'); sevFilter = btn.dataset.sev; }
+    else { sevFilter = ''; }
+    render();
+  });
+});
+
+function fmt(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) +
+    ' ' + d.toLocaleDateString([], {month:'short',day:'numeric'});
+}
+
+function render() {
+  const filtered = allEvents.filter(e =>
+    (!srcFilter || e.source === srcFilter) &&
+    (!sevFilter || e.severity === sevFilter)
+  );
+  const body = document.getElementById('events-body');
+  if (filtered.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">No events match the current filter.</td></tr>';
+    return;
+  }
+  body.innerHTML = filtered.map(e => `
+    <tr>
+      <td style="white-space:nowrap;color:#64748b">${fmt(e.timestamp)}</td>
+      <td><span class="sev sev-${e.severity}">${e.severity}</span></td>
+      <td><span class="src">${e.source}</span></td>
+      <td>${e.action}</td>
+      <td><code>${e.resource}</code></td>
+      <td style="color:#94a3b8">${e.process || '—'}</td>
+    </tr>`).join('');
+}
+
+function updateStats(events) {
+  const cnt = {critical:0,high:0,medium:0,info:0};
+  events.forEach(e => { if(cnt[e.severity]!==undefined) cnt[e.severity]++; });
+  document.getElementById('cnt-critical').textContent = cnt.critical;
+  document.getElementById('cnt-high').textContent = cnt.high;
+  document.getElementById('cnt-medium').textContent = cnt.medium;
+  document.getElementById('cnt-info').textContent = cnt.info;
+  document.getElementById('cnt-total').textContent = events.length;
+}
+
+async function poll() {
+  const since = new Date(Date.now() - 60*60*1000).toISOString();
+  try {
+    const r = await fetch('/api/events?since=' + encodeURIComponent(since) + '&limit=500');
+    if (!r.ok) throw new Error(r.status);
+    allEvents = await r.json();
+    updateStats(allEvents);
+    render();
+    document.getElementById('status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+poll();
+setInterval(poll, 10000);
+</script>
+</body>
+</html>
