@@ -7,6 +7,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SuppressRule suppresses events whose resource or process contains Match.
+// Source is optional — if empty the rule applies to all sources.
+type SuppressRule struct {
+	Match  string `yaml:"match"`  // substring to match against resource or process name
+	Source string `yaml:"source"` // optional: file_access|process|network
+	Reason string `yaml:"reason"` // human-readable explanation logged on suppression
+}
+
 type Config struct {
 	// Paths to watch for sensitive file access
 	WatchPaths []string `yaml:"watch_paths"`
@@ -29,6 +37,12 @@ type Config struct {
 
 	// Anthropic key for local standalone mode
 	AnthropicAPIKey string `yaml:"anthropic_api_key"`
+
+	// Signal dedup cooldown — same signal won't re-alert within this window
+	SignalCooldown time.Duration `yaml:"signal_cooldown"`
+
+	// Suppress rules — events matching any rule are dropped before buffering
+	SuppressRules []SuppressRule `yaml:"suppress_rules"`
 }
 
 var Defaults = Config{
@@ -41,6 +55,7 @@ var Defaults = Config{
 	PollInterval:         5 * time.Second,
 	BufferRetentionHours: 24,
 	MCPTransport:         "stdio",
+	SignalCooldown:       time.Hour,
 }
 
 func Load(path string) (*Config, error) {

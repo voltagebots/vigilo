@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_source    ON events(source);
 CREATE INDEX IF NOT EXISTS idx_events_severity  ON events(severity);
+
+CREATE TABLE IF NOT EXISTS signal_dedup (
+	hash       TEXT PRIMARY KEY,
+	first_seen TEXT NOT NULL,
+	last_seen  TEXT NOT NULL,
+	count      INTEGER NOT NULL DEFAULT 1
+);
 `
 
 // Store persists events in SQLite and serves queries from the MCP server.
@@ -144,6 +151,52 @@ func (s *Store) ToJSON(events []collector.Event) (string, error) {
 	return string(b), err
 }
 
+// IsDuplicate returns true if this signal hash was seen within the cooldown window.
+// If not a duplicate, it records the signal and returns false.
+func (s *Store) IsDuplicate(hash string, cooldown time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-cooldown).Format(time.RFC3339)
+	nowStr := now.Format(time.RFC3339)
+
+	var lastSeen string
+	err := s.db.QueryRow(
+		`SELECT last_seen FROM signal_dedup WHERE hash = ?`, hash,
+	).Scan(&lastSeen)
+
+	if err == sql.ErrNoRows {
+		// First time seeing this signal — record it
+		_, err = s.db.Exec(
+			`INSERT INTO signal_dedup (hash, first_seen, last_seen, count) VALUES (?, ?, ?, 1)`,
+			hash, nowStr, nowStr,
+		)
+		return false, err
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if lastSeen >= cutoff {
+		// Seen recently — update count and suppress
+		_, _ = s.db.Exec(
+			`UPDATE signal_dedup SET last_seen = ?, count = count + 1 WHERE hash = ?`,
+			nowStr, hash,
+		)
+		return true, nil
+	}
+
+	// Cooldown expired — reset and allow
+	_, err = s.db.Exec(
+		`UPDATE signal_dedup SET last_seen = ?, count = 1 WHERE hash = ?`,
+		nowStr, hash,
+	)
+	return false, err
+}
+
+func (s *Store) pruneSignalDedup(olderThan time.Duration) {
+	cutoff := time.Now().Add(-olderThan).UTC().Format(time.RFC3339)
+	_, _ = s.db.Exec(`DELETE FROM signal_dedup WHERE last_seen < ?`, cutoff)
+}
+
 func (s *Store) pruneLoop() {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
@@ -153,5 +206,7 @@ func (s *Store) pruneLoop() {
 			"DELETE FROM events WHERE timestamp < ?",
 			cutoff.UTC().Format(time.RFC3339Nano),
 		)
+		// Prune dedup table entries older than 7 days
+		s.pruneSignalDedup(7 * 24 * time.Hour)
 	}
 }

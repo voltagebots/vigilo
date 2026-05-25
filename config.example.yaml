@@ -27,3 +27,25 @@ mcp_transport: stdio
 
 # Only used when mcp_transport = "http"
 # mcp_addr: ":7070"
+
+# How long before the same signal can fire again (passed to agent via MCP metadata)
+# The agent enforces this client-side; set SIGNAL_COOLDOWN_MS in agent/.env too.
+signal_cooldown: 1h
+
+# Suppression rules — events matching any rule are dropped before reaching the buffer.
+# Useful for known-good processes and paths that would otherwise generate noise.
+# match: substring checked against resource path and process name (case-insensitive)
+# source: optional filter — file_access | process | network (omit to match all sources)
+# reason: logged when an event is suppressed (helps with audit trails)
+suppress_rules:
+  - match: /var/backups/
+    source: file_access
+    reason: "nightly backup job reads credential dirs"
+
+  - match: datadog-agent
+    source: process
+    reason: "observability agent — known safe"
+
+  - match: /etc/vigilo/
+    source: file_access
+    reason: "vigilo config reads its own files on reload"
