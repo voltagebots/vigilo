@@ -7,12 +7,19 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
 )
+
+// SyslogConfig configures CEF syslog output (Linux only).
+type SyslogConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
 
 // Config holds all alerter configuration loaded from the daemon config file.
 type Config struct {
@@ -26,16 +33,28 @@ type Config struct {
 	Telegram *TelegramConfig `yaml:"telegram"`
 	Email    *EmailConfig    `yaml:"email"`
 	Webhooks []WebhookConfig `yaml:"webhooks"`
+	Syslog   *SyslogConfig   `yaml:"syslog"`
+}
+
+// Stats holds counters for monitoring alerter health.
+type Stats struct {
+	AlertsSent    uint64
+	AlertsDropped uint64
 }
 
 // Dispatcher fires all configured alert channels for a given event.
 type Dispatcher struct {
 	cfg      Config
 	channels []channel
+	client   *http.Client
 
 	// daemon-side dedup: fingerprint → expiry
-	dedupMu   sync.Mutex
+	dedupMu    sync.Mutex
 	dedupCache map[string]time.Time
+
+	// atomic counters — read with atomic.LoadUint64
+	alertsSent    uint64
+	alertsDropped uint64
 }
 
 type channel interface {
@@ -54,19 +73,25 @@ func New(cfg Config) *Dispatcher {
 	if cfg.Cooldown == 0 {
 		cfg.Cooldown = 15 * time.Minute
 	}
-	d := &Dispatcher{cfg: cfg, dedupCache: make(map[string]time.Time)}
+	client := &http.Client{Timeout: 10 * time.Second}
+	d := &Dispatcher{cfg: cfg, client: client, dedupCache: make(map[string]time.Time)}
 
 	if cfg.Slack != nil && cfg.Slack.WebhookURL != "" {
-		d.channels = append(d.channels, newSlackChannel(cfg.Slack))
+		d.channels = append(d.channels, newSlackChannel(cfg.Slack, client))
 	}
 	if cfg.Telegram != nil && cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "" {
-		d.channels = append(d.channels, newTelegramChannel(cfg.Telegram))
+		d.channels = append(d.channels, newTelegramChannel(cfg.Telegram, client))
 	}
 	if cfg.Email != nil && cfg.Email.SMTPHost != "" && len(cfg.Email.To) > 0 {
 		d.channels = append(d.channels, newEmailChannel(cfg.Email))
 	}
 	for i := range cfg.Webhooks {
-		d.channels = append(d.channels, newWebhookChannel(&cfg.Webhooks[i]))
+		d.channels = append(d.channels, newWebhookChannel(&cfg.Webhooks[i], client))
+	}
+	if cfg.Syslog != nil && cfg.Syslog.Enabled {
+		if ch := newSyslogChannel(); ch != nil {
+			d.channels = append(d.channels, ch)
+		}
 	}
 
 	if len(d.channels) > 0 {
@@ -76,7 +101,19 @@ func New(cfg Config) *Dispatcher {
 		}
 		slog.Info("immediate alerter ready", "channels", strings.Join(names, ","))
 	}
+
+	// Background dedup cache pruner — every 5 minutes.
+	go d.pruneDedupLoop()
+
 	return d
+}
+
+// Stats returns a snapshot of alerter counters.
+func (d *Dispatcher) Stats() Stats {
+	return Stats{
+		AlertsSent:    atomic.LoadUint64(&d.alertsSent),
+		AlertsDropped: atomic.LoadUint64(&d.alertsDropped),
+	}
 }
 
 // ShouldAlert returns true if the event severity meets the configured threshold.
@@ -92,6 +129,7 @@ func (d *Dispatcher) ShouldAlert(e collector.Event) bool {
 }
 
 // Fire sends an immediate alert to all configured channels, with dedup suppression.
+// On failure, a single retry is attempted after 500ms.
 func (d *Dispatcher) Fire(e collector.Event) {
 	fp := eventFingerprint(e)
 	d.dedupMu.Lock()
@@ -104,10 +142,55 @@ func (d *Dispatcher) Fire(e collector.Event) {
 	d.dedupMu.Unlock()
 
 	msg := formatAlert(e)
+	allFailed := true
 	for _, ch := range d.channels {
-		if err := ch.send(e, msg); err != nil {
-			slog.Error("alert send failed", "channel", ch.name(), "err", err)
+		err := ch.send(e, msg)
+		if err != nil {
+			slog.Warn("alert send failed, retrying", "channel", ch.name(), "err", err)
+			time.Sleep(500 * time.Millisecond)
+			err = ch.send(e, msg)
 		}
+		if err != nil {
+			slog.Error("alert send failed after retry",
+				"channel", ch.name(),
+				"err", err,
+				"event_id", e.ID,
+				"source", e.Source,
+				"severity", e.Severity,
+			)
+		} else {
+			allFailed = false
+		}
+	}
+
+	if len(d.channels) == 0 {
+		return
+	}
+	if allFailed {
+		atomic.AddUint64(&d.alertsDropped, 1)
+		slog.Error("alert dropped — all channels failed",
+			"event_id", e.ID,
+			"source", e.Source,
+			"severity", e.Severity,
+		)
+	} else {
+		atomic.AddUint64(&d.alertsSent, 1)
+	}
+}
+
+// pruneDedupLoop removes expired entries from dedupCache every 5 minutes.
+func (d *Dispatcher) pruneDedupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		d.dedupMu.Lock()
+		for k, expiry := range d.dedupCache {
+			if now.After(expiry) {
+				delete(d.dedupCache, k)
+			}
+		}
+		d.dedupMu.Unlock()
 	}
 }
 
@@ -124,7 +207,7 @@ func formatAlert(e collector.Event) string {
 	sev := strings.ToUpper(string(e.Severity))
 	ts := e.Timestamp.UTC().Format(time.RFC3339)
 	lines := []string{
-		fmt.Sprintf("🚨 VIGILO ALERT — %s", sev),
+		fmt.Sprintf("VIGILO ALERT -- %s", sev),
 		fmt.Sprintf("Source:   %s", e.Source),
 		fmt.Sprintf("Action:   %s", e.Action),
 		fmt.Sprintf("Resource: %s", e.Resource),

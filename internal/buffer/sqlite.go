@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
@@ -14,6 +15,10 @@ import (
 )
 
 const schema = `
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA busy_timeout=5000;
+
 CREATE TABLE IF NOT EXISTS events (
 	id        INTEGER PRIMARY KEY AUTOINCREMENT,
 	source    TEXT    NOT NULL,
@@ -42,8 +47,8 @@ CREATE TABLE IF NOT EXISTS signal_dedup (
 
 // Store persists events in SQLite and serves queries from the MCP server.
 type Store struct {
-	db              *sql.DB
-	retentionHours  int
+	db             *sql.DB
+	retentionHours int
 }
 
 func Open(path string, retentionHours int) (*Store, error) {
@@ -51,12 +56,21 @@ func Open(path string, retentionHours int) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// SQLite is single-writer: one connection is both sufficient and correct.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	s := &Store{db: db, retentionHours: retentionHours}
 	go s.pruneLoop()
 	return s, nil
+}
+
+// Close shuts down the underlying database connection.
+func (s *Store) Close() error {
+	return s.db.Close()
 }
 
 func (s *Store) Insert(e collector.Event) error {
@@ -83,6 +97,11 @@ var severityRank = map[string]int{
 }
 
 func (s *Store) List(opts QueryOptions) ([]collector.Event, error) {
+	// Cap limit to prevent unbounded queries.
+	if opts.Limit <= 0 || opts.Limit > 1000 {
+		opts.Limit = 1000
+	}
+
 	query := `SELECT id,source,timestamp,pid,ppid,process,cmd_line,user_id,action,resource,detail,severity
 	          FROM events WHERE timestamp >= ?`
 	args := []any{opts.Since.UTC().Format(time.RFC3339Nano)}
@@ -117,9 +136,7 @@ func (s *Store) List(opts QueryOptions) ([]collector.Event, error) {
 	}
 
 	query += " ORDER BY timestamp DESC"
-	if opts.Limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", opts.Limit)
-	}
+	query += fmt.Sprintf(" LIMIT %d", opts.Limit)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -144,6 +161,16 @@ func (s *Store) List(opts QueryOptions) ([]collector.Event, error) {
 		events = append(events, e)
 	}
 	return events, rows.Err()
+}
+
+// CountSince returns the number of events recorded after the given time.
+func (s *Store) CountSince(since time.Time) (int64, error) {
+	var count int64
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE timestamp >= ?`,
+		since.UTC().Format(time.RFC3339Nano),
+	).Scan(&count)
+	return count, err
 }
 
 func (s *Store) ToJSON(events []collector.Event) (string, error) {
@@ -194,7 +221,9 @@ func (s *Store) IsDuplicate(hash string, cooldown time.Duration) (bool, error) {
 
 func (s *Store) pruneSignalDedup(olderThan time.Duration) {
 	cutoff := time.Now().Add(-olderThan).UTC().Format(time.RFC3339)
-	_, _ = s.db.Exec(`DELETE FROM signal_dedup WHERE last_seen < ?`, cutoff)
+	if _, err := s.db.Exec(`DELETE FROM signal_dedup WHERE last_seen < ?`, cutoff); err != nil {
+		slog.Warn("signal_dedup prune error", "err", err)
+	}
 }
 
 func (s *Store) pruneLoop() {
@@ -202,10 +231,12 @@ func (s *Store) pruneLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		cutoff := time.Now().Add(-time.Duration(s.retentionHours) * time.Hour)
-		_, _ = s.db.Exec(
+		if _, err := s.db.Exec(
 			"DELETE FROM events WHERE timestamp < ?",
 			cutoff.UTC().Format(time.RFC3339Nano),
-		)
+		); err != nil {
+			slog.Warn("events prune error", "err", err)
+		}
 		// Prune dedup table entries older than 7 days
 		s.pruneSignalDedup(7 * 24 * time.Hour)
 	}

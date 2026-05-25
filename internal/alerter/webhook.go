@@ -19,11 +19,14 @@ type WebhookConfig struct {
 }
 
 type webhookChannel struct {
-	cfg *WebhookConfig
+	cfg    *WebhookConfig
+	client *http.Client
 }
 
-func newWebhookChannel(cfg *WebhookConfig) *webhookChannel { return &webhookChannel{cfg: cfg} }
-func (w *webhookChannel) name() string                      { return "webhook:" + w.cfg.Name }
+func newWebhookChannel(cfg *WebhookConfig, client *http.Client) *webhookChannel {
+	return &webhookChannel{cfg: cfg, client: client}
+}
+func (w *webhookChannel) name() string { return "webhook:" + w.cfg.Name }
 
 func (w *webhookChannel) send(e collector.Event, _ string) error {
 	payload := map[string]any{
@@ -47,7 +50,7 @@ func (w *webhookChannel) send(e collector.Event, _ string) error {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := w.client.Do(req)
 	if err != nil {
 		return err
 	}

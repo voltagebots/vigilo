@@ -11,6 +11,9 @@
   header h1{font-size:1.25rem;font-weight:600;letter-spacing:.05em}
   header h1 span{color:#6366f1}
   .badge{background:#6366f1;color:#fff;border-radius:9999px;font-size:.7rem;padding:.2rem .5rem;font-weight:700}
+  .badge.sse{background:#22c55e}
+  .badge.poll{background:#f59e0b}
+  .badge.err{background:#ef4444}
   .status{margin-left:auto;font-size:.8rem;color:#64748b}
   .stats{display:flex;gap:1rem;padding:1rem 1.5rem;border-bottom:1px solid #1e2133}
   .stat{background:#1a1d27;border:1px solid #2d3148;border-radius:.5rem;padding:.75rem 1.25rem;flex:1;text-align:center}
@@ -44,9 +47,9 @@
 </head>
 <body>
 <header>
-  <h1><span>⬡</span> Vigilo</h1>
-  <span class="badge">LIVE</span>
-  <span class="status" id="status">Loading…</span>
+  <h1><span>vigilo</span></h1>
+  <span class="badge" id="mode-badge">CONNECTING</span>
+  <span class="status" id="status">Connecting...</span>
 </header>
 <div class="stats">
   <div class="stat critical"><div class="stat-num" id="cnt-critical">0</div><div class="stat-label">Critical</div></div>
@@ -73,15 +76,19 @@
     <tr><th>Time</th><th>Severity</th><th>Source</th><th>Action</th><th>Resource</th><th>Process</th></tr>
   </thead>
   <tbody id="events-body">
-    <tr><td colspan="6" class="empty">Loading events…</td></tr>
+    <tr><td colspan="6" class="empty">Loading events...</td></tr>
   </tbody>
 </table>
 </div>
 <script>
+const MAX_EVENTS = 500;
 let allEvents = [];
 let srcFilter = '';
 let sevFilter = '';
+let sseActive = false;
+let pollTimer = null;
 
+// --- filter UI ---
 document.querySelectorAll('[data-src]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('[data-src]').forEach(b => b.classList.remove('active'));
@@ -123,7 +130,7 @@ function render() {
       <td><span class="src">${e.source}</span></td>
       <td>${e.action}</td>
       <td><code>${e.resource}</code></td>
-      <td style="color:#94a3b8">${e.process || '—'}</td>
+      <td style="color:#94a3b8">${e.process || '-'}</td>
     </tr>`).join('');
 }
 
@@ -137,6 +144,57 @@ function updateStats(events) {
   document.getElementById('cnt-total').textContent = events.length;
 }
 
+function setMode(mode) {
+  const badge = document.getElementById('mode-badge');
+  badge.className = 'badge ' + mode;
+  badge.textContent = mode === 'sse' ? 'LIVE' : mode === 'poll' ? 'POLLING' : 'ERROR';
+}
+
+function prependEvent(e) {
+  allEvents.unshift(e);
+  if (allEvents.length > MAX_EVENTS) allEvents.length = MAX_EVENTS;
+  updateStats(allEvents);
+  render();
+}
+
+// --- SSE (primary) ---
+let es = null;
+
+function connectSSE() {
+  if (es) { es.close(); es = null; }
+  setMode('sse');
+  document.getElementById('status').textContent = 'Connecting via SSE...';
+
+  es = new EventSource('/events/stream');
+
+  es.onopen = () => {
+    sseActive = true;
+    stopPolling();
+    setMode('sse');
+    document.getElementById('status').textContent = 'Live (SSE) ' + new Date().toLocaleTimeString();
+  };
+
+  es.onmessage = (ev) => {
+    try {
+      const e = JSON.parse(ev.data);
+      prependEvent(e);
+      document.getElementById('status').textContent = 'Live (SSE) ' + new Date().toLocaleTimeString();
+    } catch(_) {}
+  };
+
+  es.onerror = () => {
+    sseActive = false;
+    setMode('poll');
+    document.getElementById('status').textContent = 'SSE error — falling back to polling';
+    es.close();
+    es = null;
+    startPolling();
+    // Reconnect SSE after 3s
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+// --- polling (fallback) ---
 async function poll() {
   const since = new Date(Date.now() - 60*60*1000).toISOString();
   try {
@@ -145,14 +203,27 @@ async function poll() {
     allEvents = await r.json();
     updateStats(allEvents);
     render();
-    document.getElementById('status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    document.getElementById('status').textContent = 'Updated (poll) ' + new Date().toLocaleTimeString();
+    setMode('poll');
   } catch(e) {
     document.getElementById('status').textContent = 'Error: ' + e.message;
+    setMode('err');
   }
 }
 
-poll();
-setInterval(poll, 10000);
+function startPolling() {
+  if (pollTimer) return;
+  poll();
+  pollTimer = setInterval(poll, 10000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// --- bootstrap ---
+// Load initial events via REST then open SSE stream.
+poll().then(() => connectSSE());
 </script>
 </body>
 </html>

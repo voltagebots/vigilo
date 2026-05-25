@@ -3,43 +3,195 @@
 package web
 
 import (
-	"embed"
+	"context"
+	_ "embed"
 	"encoding/json"
+	"expvar"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/voltagebots/vigilo/internal/buffer"
 	"github.com/voltagebots/vigilo/internal/collector"
 )
 
+// expvar counters — exposed at /metrics.
+var (
+	metricEventsTotal   = expvar.NewInt("vigilo_events_total")
+	metricAlertsSent    = expvar.NewInt("vigilo_alerts_sent")
+	metricAlertsDropped = expvar.NewInt("vigilo_alerts_dropped")
+	metricWebRequests   = expvar.NewInt("vigilo_web_requests_total")
+)
+
+// Config holds web server configuration.
+type Config struct {
+	// AllowedOrigins is the list of origins permitted for CORS.
+	// Empty = no CORS headers (same-origin only, recommended default).
+	AllowedOrigins []string
+
+	// Token is the shared secret required in Authorization: Bearer <token>
+	// or ?token=<token> on all non-health routes. Empty = no auth.
+	Token string
+}
+
 //go:embed dashboard.html
-var static embed.FS
+var dashboardHTML []byte
+
+// ipLimiters holds per-IP token-bucket rate limiters.
+type ipLimiters struct {
+	mu sync.Mutex
+	m  map[string]*rate.Limiter
+}
+
+func (l *ipLimiters) get(ip string) *rate.Limiter {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if lim, ok := l.m[ip]; ok {
+		return lim
+	}
+	// 60 requests per minute with a burst of 20.
+	lim := rate.NewLimiter(rate.Every(time.Minute/60), 20)
+	l.m[ip] = lim
+	return lim
+}
 
 // Server serves the Vigilo web dashboard.
 type Server struct {
-	store *buffer.Store
-	mux   *http.ServeMux
+	store       *buffer.Store
+	mux         *http.ServeMux
+	cfg         Config
+	broadcaster *Broadcaster
+	startTime   time.Time
+	limiters    ipLimiters
 }
 
-func New(store *buffer.Store) *Server {
-	s := &Server{store: store, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/", s.handleDashboard)
-	s.mux.HandleFunc("/api/events", s.handleEvents)
+// New creates a Server. cfg.Token falls back to VIGILO_WEB_TOKEN env var.
+func New(store *buffer.Store, cfg Config) *Server {
+	if cfg.Token == "" {
+		cfg.Token = os.Getenv("VIGILO_WEB_TOKEN")
+	}
+	s := &Server{
+		store:       store,
+		mux:         http.NewServeMux(),
+		cfg:         cfg,
+		broadcaster: NewBroadcaster(),
+		startTime:   time.Now(),
+		limiters:    ipLimiters{m: make(map[string]*rate.Limiter)},
+	}
+
+	s.mux.HandleFunc("/healthz", s.handleHealth)
+	s.mux.HandleFunc("/metrics", s.handleMetrics)
+	s.mux.HandleFunc("/events/stream", s.authMiddleware(s.handleSSE))
+	s.mux.HandleFunc("/api/events", s.authMiddleware(s.handleEvents))
+	s.mux.HandleFunc("/", s.authMiddleware(s.handleDashboard))
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+// Broadcast publishes an event to all SSE subscribers and increments the counter.
+func (s *Server) Broadcast(e collector.Event) {
+	metricEventsTotal.Add(1)
+	s.broadcaster.Publish(e)
 }
 
-func (s *Server) Listen(addr string) error {
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      s,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+// SetAlertCounters syncs alerter stats into expvar counters.
+func (s *Server) SetAlertCounters(sent, dropped uint64) {
+	metricAlertsSent.Set(int64(sent))
+	metricAlertsDropped.Set(int64(dropped))
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, code: http.StatusOK}
+
+	// Rate limiting before routing.
+	ip := remoteIP(r)
+	lim := s.limiters.get(ip)
+	if !lim.Allow() {
+		w.Header().Set("Retry-After", "1")
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
 	}
-	return srv.ListenAndServe()
+
+	s.mux.ServeHTTP(rw, r)
+	metricWebRequests.Add(1)
+	slog.Info("web request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"status", rw.code,
+		"latency_ms", time.Since(start).Milliseconds(),
+		"remote_ip", ip,
+	)
+}
+
+// Listen starts the HTTP server and blocks until ctx is cancelled.
+func (s *Server) Listen(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Handler:     s,
+		ReadTimeout: 10 * time.Second,
+		// WriteTimeout is intentionally 0 — SSE connections are long-lived.
+		// Individual handlers are bounded by request context.
+		IdleTimeout: 60 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(ln) }()
+
+	select {
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	case err := <-errCh:
+		return err
+	}
+}
+
+// --- middleware ---
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Token == "" {
+			next(w, r)
+			return
+		}
+		// Check Authorization: Bearer <token>
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			if strings.TrimPrefix(authHeader, "Bearer ") == s.cfg.Token {
+				next(w, r)
+				return
+			}
+		}
+		// Check ?token=<token>
+		if r.URL.Query().Get("token") == s.cfg.Token {
+			next(w, r)
+			return
+		}
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+	}
+}
+
+// --- handlers ---
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	uptime := int64(time.Since(s.startTime).Seconds())
+	count, _ := s.store.CountSince(time.Now().Add(-24 * time.Hour))
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","uptime_seconds":%d,"events_buffered":%d}`, uptime, count)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	expvar.Handler().ServeHTTP(w, r)
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -47,41 +199,153 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	b, _ := static.ReadFile("dashboard.html")
+	s.setCORSHeaders(w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(b)
+	w.Write(dashboardHTML)
+}
+
+var validSources = map[string]bool{
+	"file_access": true, "process": true, "network": true,
+}
+
+var validSeverities = map[string]bool{
+	"info": true, "medium": true, "high": true, "critical": true,
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	since := time.Now().Add(-time.Hour)
-	if s := q.Get("since"); s != "" {
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			since = t
+	if sinceStr := q.Get("since"); sinceStr != "" {
+		t, err := time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			jsonError(w, "invalid 'since' — expected RFC3339 timestamp", http.StatusBadRequest)
+			return
 		}
+		since = t
 	}
 
 	limit := 500
+	if limitStr := q.Get("limit"); limitStr != "" {
+		var n int
+		if _, err := fmt.Sscanf(limitStr, "%d", &n); err != nil || n < 1 || n > 1000 {
+			jsonError(w, "invalid 'limit' — must be 1-1000", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+
+	sevFilter := q.Get("severity")
+	if sevFilter != "" && !validSeverities[sevFilter] {
+		jsonError(w, "invalid 'severity' — must be info|medium|high|critical", http.StatusBadRequest)
+		return
+	}
+
+	srcFilter := q.Get("source")
+	if srcFilter != "" && !validSources[srcFilter] {
+		jsonError(w, "invalid 'source' — must be file_access|process|network", http.StatusBadRequest)
+		return
+	}
+
 	opts := buffer.QueryOptions{
 		Since:    since,
-		Severity: q.Get("severity"),
+		Severity: sevFilter,
 		Limit:    limit,
 	}
-	if src := q.Get("source"); src != "" {
-		opts.Sources = []string{src}
+	if srcFilter != "" {
+		opts.Sources = []string{srcFilter}
 	}
 
 	events, err := s.store.List(opts)
 	if err != nil {
-		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		jsonError(w, "query failed", http.StatusInternalServerError)
 		return
 	}
 	if events == nil {
 		events = []collector.Event{}
 	}
 
+	s.setCORSHeaders(w, r)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(events)
+}
+
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	ch := s.broadcaster.Subscribe()
+	if ch == nil {
+		jsonError(w, "too many SSE clients", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.broadcaster.Unsubscribe(ch)
+
+	s.setCORSHeaders(w, r)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			b, err := json.Marshal(e)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			flusher.Flush()
+		}
+	}
+}
+
+// --- helpers ---
+
+func (s *Server) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	if len(s.cfg.AllowedOrigins) == 0 {
+		return // same-origin only
+	}
+	origin := r.Header.Get("Origin")
+	for _, allowed := range s.cfg.AllowedOrigins {
+		if allowed == "*" || allowed == origin {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			return
+		}
+	}
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	fmt.Fprintf(w, `{"error":%q}`, msg)
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// responseWriter wraps http.ResponseWriter to capture the status code for logging.
+type responseWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.code = code
+	rw.ResponseWriter.WriteHeader(code)
 }

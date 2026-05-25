@@ -202,6 +202,40 @@ suppress_rules:
 
 ---
 
+## Security
+
+### Web dashboard authentication
+
+Set `VIGILO_WEB_TOKEN` (env var) or `web_token` in `config.yaml`. When set, every request to the dashboard requires `Authorization: Bearer <token>` or `?token=<token>`. Without a token configured there is no auth — do not expose the port publicly.
+
+### Network binding — never expose ports publicly
+
+Always bind to `127.0.0.1`, never `0.0.0.0`:
+
+```yaml
+web_addr: "127.0.0.1:7080"
+mcp_addr: "127.0.0.1:7070"
+```
+
+Use Tailscale or WireGuard for remote access. Opening vigilo ports to the public internet is unsupported and unsafe.
+
+### Secrets via environment variables — not config.yaml
+
+Set alert credentials via env vars so they never appear in config files or container images:
+
+```bash
+export VIGILO_TELEGRAM_BOT_TOKEN=...
+export VIGILO_SLACK_WEBHOOK_URL=https://hooks.slack.com/...
+export VIGILO_SMTP_PASSWORD=...
+export VIGILO_WEB_TOKEN=$(openssl rand -hex 32)
+```
+
+### systemd hardening — dedicated vigilo user
+
+The included `deploy/vigilo.service` runs vigilo as a dedicated system user with `ProtectSystem=strict`, `NoNewPrivileges=true`, and no capabilities. See [SECURITY.md](SECURITY.md) for the full threat model and deployment guide.
+
+---
+
 ## What's done
 
 - [x] File watcher (fsnotify, macOS + Linux)

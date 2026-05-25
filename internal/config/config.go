@@ -52,17 +52,27 @@ type Config struct {
 	// WebAddr enables the web dashboard when non-empty (e.g. "127.0.0.1:7080").
 	WebAddr string `yaml:"web_addr"`
 
+	// WebToken is the Bearer token required for web dashboard access.
+	// Set via VIGILO_WEB_TOKEN env var or web_token config field.
+	// Empty = no auth (not recommended for production).
+	WebToken string `yaml:"web_token"`
+
 	// Immediate alerter — fires on high/critical events without waiting for LLM analysis
 	Alerter AlerterConfig `yaml:"alerter"`
 }
 
 // AlerterConfig mirrors alerter.Config to avoid import cycles.
 type AlerterConfig struct {
-	MinSeverity string        `yaml:"min_severity"`
-	Slack       *SlackConfig  `yaml:"slack"`
+	MinSeverity string          `yaml:"min_severity"`
+	Slack       *SlackConfig    `yaml:"slack"`
 	Telegram    *TelegramConfig `yaml:"telegram"`
-	Email       *EmailConfig  `yaml:"email"`
+	Email       *EmailConfig    `yaml:"email"`
 	Webhooks    []WebhookConfig `yaml:"webhooks"`
+	Syslog      *SyslogConfig   `yaml:"syslog"`
+}
+
+type SyslogConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type SlackConfig struct {
@@ -102,12 +112,23 @@ var Defaults = Config{
 	SignalCooldown:       time.Hour,
 }
 
+// Load reads the config file at path (using defaults if file is absent),
+// then overlays secrets from environment variables.
 func Load(path string) (*Config, error) {
+	return LoadWithEnv(path)
+}
+
+// LoadWithEnv reads config from path then overrides specific sensitive fields
+// from environment variables so secrets never need to appear in config files.
+//
+// Env var precedence (highest → lowest): env var > config file > default.
+func LoadWithEnv(path string) (*Config, error) {
 	cfg := Defaults
 
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			applyEnvOverrides(&cfg)
 			return &cfg, nil // use defaults
 		}
 		return nil, err
@@ -117,5 +138,39 @@ func Load(path string) (*Config, error) {
 	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
 		return nil, err
 	}
+
+	applyEnvOverrides(&cfg)
 	return &cfg, nil
+}
+
+// applyEnvOverrides overlays environment variables onto cfg.
+// Only specific fields are covered; all others remain as loaded from YAML.
+func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("VIGILO_TELEGRAM_BOT_TOKEN"); v != "" {
+		if cfg.Alerter.Telegram == nil {
+			cfg.Alerter.Telegram = &TelegramConfig{}
+		}
+		cfg.Alerter.Telegram.BotToken = v
+	}
+	if v := os.Getenv("VIGILO_TELEGRAM_CHAT_ID"); v != "" {
+		if cfg.Alerter.Telegram == nil {
+			cfg.Alerter.Telegram = &TelegramConfig{}
+		}
+		cfg.Alerter.Telegram.ChatID = v
+	}
+	if v := os.Getenv("VIGILO_SLACK_WEBHOOK_URL"); v != "" {
+		if cfg.Alerter.Slack == nil {
+			cfg.Alerter.Slack = &SlackConfig{}
+		}
+		cfg.Alerter.Slack.WebhookURL = v
+	}
+	if v := os.Getenv("VIGILO_SMTP_PASSWORD"); v != "" {
+		if cfg.Alerter.Email == nil {
+			cfg.Alerter.Email = &EmailConfig{}
+		}
+		cfg.Alerter.Email.Password = v
+	}
+	if v := os.Getenv("VIGILO_WEB_TOKEN"); v != "" {
+		cfg.WebToken = v
+	}
 }

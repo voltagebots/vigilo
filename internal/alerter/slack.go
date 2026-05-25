@@ -17,16 +17,19 @@ type SlackConfig struct {
 }
 
 type slackChannel struct {
-	cfg *SlackConfig
+	cfg    *SlackConfig
+	client *http.Client
 }
 
-func newSlackChannel(cfg *SlackConfig) *slackChannel { return &slackChannel{cfg: cfg} }
-func (s *slackChannel) name() string                  { return "slack" }
+func newSlackChannel(cfg *SlackConfig, client *http.Client) *slackChannel {
+	return &slackChannel{cfg: cfg, client: client}
+}
+func (s *slackChannel) name() string { return "slack" }
 
 func (s *slackChannel) send(e collector.Event, _ string) error {
 	emoji := severityEmoji(e.Severity)
 	payload := map[string]any{
-		"text": fmt.Sprintf("%s *[%s]* `%s` → `%s`  (%s)",
+		"text": fmt.Sprintf("%s *[%s]* `%s` -> `%s`  (%s)",
 			emoji, strings.ToUpper(string(e.Severity)),
 			e.Action, e.Resource, e.Source),
 		"blocks": []map[string]any{
@@ -35,7 +38,7 @@ func (s *slackChannel) send(e collector.Event, _ string) error {
 				"text": map[string]any{
 					"type": "mrkdwn",
 					"text": fmt.Sprintf(
-						"%s *Vigilo Immediate Alert — %s*\n*Action:* `%s`\n*Resource:* `%s`\n*Source:* %s%s",
+						"%s *Vigilo Immediate Alert -- %s*\n*Action:* `%s`\n*Resource:* `%s`\n*Source:* %s%s",
 						emoji,
 						strings.ToUpper(string(e.Severity)),
 						e.Action, e.Resource, e.Source,
@@ -52,7 +55,7 @@ func (s *slackChannel) send(e collector.Event, _ string) error {
 	}
 
 	b, _ := json.Marshal(payload)
-	resp, err := http.Post(s.cfg.WebhookURL, "application/json", bytes.NewReader(b))
+	resp, err := s.client.Post(s.cfg.WebhookURL, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -66,12 +69,12 @@ func (s *slackChannel) send(e collector.Event, _ string) error {
 func severityEmoji(sev collector.Severity) string {
 	switch sev {
 	case collector.SeverityCritical:
-		return "🔴"
+		return "[CRITICAL]"
 	case collector.SeverityHigh:
-		return "🟠"
+		return "[HIGH]"
 	case collector.SeverityMedium:
-		return "🟡"
+		return "[MEDIUM]"
 	default:
-		return "🔵"
+		return "[INFO]"
 	}
 }
