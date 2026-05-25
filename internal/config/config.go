@@ -44,6 +44,11 @@ type Config struct {
 	// Suppress rules — events matching any rule are dropped before buffering
 	SuppressRules []SuppressRule `yaml:"suppress_rules"`
 
+	// AuditdLogPath enables the auditd collector when non-empty.
+	// Typically /var/log/audit/audit.log — requires read access (adm group or root).
+	// Only events matching audit rules with a "vigilo_" key prefix are processed.
+	AuditdLogPath string `yaml:"auditd_log_path"`
+
 	// Immediate alerter — fires on high/critical events without waiting for LLM analysis
 	Alerter AlerterConfig `yaml:"alerter"`
 }

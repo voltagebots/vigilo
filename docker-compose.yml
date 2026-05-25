@@ -1,0 +1,40 @@
+services:
+  daemon:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.example.yaml:/etc/vigilo/config.yaml:ro
+      - vigilo-data:/var/lib/vigilo
+      # Mount the paths you want to watch (add your app dirs here)
+      - /home:/home:ro
+      - /run/secrets:/run/secrets:ro
+      # Linux proc (process + network watchers need this)
+      - /proc:/proc:ro
+    environment:
+      - LOG_LEVEL=info
+    # SSE/HTTP mode so the agent can connect
+    command: ["-config", "/etc/vigilo/config.yaml", "-db", "/var/lib/vigilo/events.db"]
+    ports:
+      - "127.0.0.1:7070:7070"   # bind to localhost only — use Tailscale/VPN for remote access
+    network_mode: host           # needed for /proc/net/tcp to see host network state
+
+  agent:
+    build: agent
+    restart: unless-stopped
+    depends_on:
+      - daemon
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      VIGILO_ALERT_CHANNEL: ${VIGILO_ALERT_CHANNEL}
+      VIGILO_MCP_URL: http://daemon:7070
+      SCAN_CRON: ${SCAN_CRON:-"*/5 * * * *"}
+      LOOKBACK_MINUTES: ${LOOKBACK_MINUTES:-6}
+      SIGNAL_COOLDOWN_MS: ${SIGNAL_COOLDOWN_MS:-3600000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: production
+    env_file:
+      - agent/.env
+
+volumes:
+  vigilo-data:

@@ -1,0 +1,34 @@
+[Unit]
+Description=Vigilo Security Daemon
+Documentation=https://github.com/voltagebots/vigilo
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=vigilo
+Group=vigilo
+ExecStart=/usr/local/bin/vigilo \
+    -config /etc/vigilo/config.yaml \
+    -db /var/lib/vigilo/events.db
+Restart=always
+RestartSec=5
+
+# Harden the service — it only needs to read watched paths and write to its db
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vigilo
+ReadOnlyPaths=/etc/vigilo
+# Allow reading watched paths (add your app dirs here if not under /home or /run)
+ReadOnlyPaths=/home /run/secrets /app
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vigilo
+
+[Install]
+WantedBy=multi-user.target

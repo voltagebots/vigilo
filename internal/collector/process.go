@@ -31,14 +31,20 @@ type procInfo struct {
 // ProcessWatcher polls /proc to detect suspicious process spawning.
 type ProcessWatcher struct {
 	interval time.Duration
+	suppress *SuppressMatcher
 	out      chan<- Event
 	seen     map[int]procInfo
 	stop     chan struct{}
 }
 
-func NewProcessWatcher(interval time.Duration, out chan<- Event) *ProcessWatcher {
+func NewProcessWatcher(interval time.Duration, out chan<- Event, suppress ...*SuppressMatcher) *ProcessWatcher {
+	var sm *SuppressMatcher
+	if len(suppress) > 0 {
+		sm = suppress[0]
+	}
 	return &ProcessWatcher{
 		interval: interval,
+		suppress: sm,
 		out:      out,
 		seen:     make(map[int]procInfo),
 		stop:     make(chan struct{}),
@@ -121,7 +127,7 @@ func (pw *ProcessWatcher) checkProcess(p procInfo) {
 			if childName == "sh" || childName == "bash" {
 				sev = SeverityCritical
 			}
-			pw.out <- Event{
+			e := Event{
 				Source:    SourceProcess,
 				Timestamp: time.Now(),
 				PID:       p.pid,
@@ -133,6 +139,9 @@ func (pw *ProcessWatcher) checkProcess(p procInfo) {
 				Resource:  fmt.Sprintf("%s → %s", parentName, childName),
 				Detail:    fmt.Sprintf("parent_cmd=%q child_cmd=%q", parent.cmdline, p.cmdline),
 				Severity:  sev,
+			}
+			if !pw.suppress.IsSuppressed(e) {
+				pw.out <- e
 			}
 			return
 		}
