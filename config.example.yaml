@@ -27,6 +27,10 @@ mcp_transport: stdio
 # Only used when mcp_transport = "http"
 # mcp_addr: ":7070"
 
+# Web dashboard — event timeline and stats (optional)
+# Bind to localhost; use nginx/caddy in front for TLS
+# web_addr: "127.0.0.1:7080"
+
 # How long before the same LLM-generated signal can re-alert
 signal_cooldown: 1h
 

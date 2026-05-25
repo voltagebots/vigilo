@@ -49,6 +49,9 @@ type Config struct {
 	// Only events matching audit rules with a "vigilo_" key prefix are processed.
 	AuditdLogPath string `yaml:"auditd_log_path"`
 
+	// WebAddr enables the web dashboard when non-empty (e.g. "127.0.0.1:7080").
+	WebAddr string `yaml:"web_addr"`
+
 	// Immediate alerter — fires on high/critical events without waiting for LLM analysis
 	Alerter AlerterConfig `yaml:"alerter"`
 }

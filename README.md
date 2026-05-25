@@ -209,24 +209,17 @@ suppress_rules:
 - [x] Network watcher (Linux `/proc/net/tcp`)
 - [x] `auditd` collector — tails audit log, kernel-level syscall events (opt-in)
 - [x] SQLite event buffer with hourly auto-prune
-- [x] Signal dedup table (per-category cooldown)
+- [x] Signal dedup — daemon-side (alerter cooldown) + agent-side (in-process cache)
 - [x] Suppression rules — all three collectors (file, process, network)
 - [x] MCP server — stdio and SSE/HTTP transports
+- [x] MCP tool `get_events_ecs` — Elastic Common Schema output for SIEM pipelines
+- [x] Web dashboard — event timeline, severity stats, live polling (`web_addr` config)
 - [x] Immediate alerter — Slack webhook, Telegram Bot, SMTP email, generic webhook
 - [x] LLM analyst agent (Claude Opus) — multi-step pattern detection
 - [x] Multi-daemon aggregation (N servers → one Claude call)
 - [x] Goose patterns: context compaction, MOIM preamble, inspector + retry
-- [x] Signal dedup in agent (in-process cooldown cache)
 - [x] CI (GitHub Actions — Go build/test + TypeScript typecheck)
 - [x] Dockerfile — daemon (alpine) + agent (node:22-alpine)
 - [x] Docker Compose — daemon + agent, single `docker compose up`
 - [x] systemd unit (`deploy/vigilo.service`) + `deploy/install.sh`
-
-## Roadmap
-
-- [ ] Daemon-side signal dedup (currently agent-side only)
-- [ ] Tailscale deployment guide
-- [ ] PagerDuty / OpsGenie native integration
-- [ ] Web UI — event timeline, signal history
-- [ ] Structured SIEM output (CEF / ECS format)
-- [ ] macOS: replace `/proc` watchers with `libproc` / `netstat` equivalents
+- [x] macOS watchers — process via `ps`, network via `netstat` (build-tagged)

@@ -4,9 +4,11 @@
 package alerter
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
@@ -16,6 +18,9 @@ import (
 type Config struct {
 	// Minimum severity to trigger immediate alerts: "high" or "critical"
 	MinSeverity string `yaml:"min_severity"`
+
+	// Cooldown between repeat alerts for the same event fingerprint (default 15m)
+	Cooldown time.Duration
 
 	Slack    *SlackConfig    `yaml:"slack"`
 	Telegram *TelegramConfig `yaml:"telegram"`
@@ -27,6 +32,10 @@ type Config struct {
 type Dispatcher struct {
 	cfg      Config
 	channels []channel
+
+	// daemon-side dedup: fingerprint → expiry
+	dedupMu   sync.Mutex
+	dedupCache map[string]time.Time
 }
 
 type channel interface {
@@ -42,7 +51,10 @@ var severityRank = map[collector.Severity]int{
 }
 
 func New(cfg Config) *Dispatcher {
-	d := &Dispatcher{cfg: cfg}
+	if cfg.Cooldown == 0 {
+		cfg.Cooldown = 15 * time.Minute
+	}
+	d := &Dispatcher{cfg: cfg, dedupCache: make(map[string]time.Time)}
 
 	if cfg.Slack != nil && cfg.Slack.WebhookURL != "" {
 		d.channels = append(d.channels, newSlackChannel(cfg.Slack))
@@ -79,14 +91,33 @@ func (d *Dispatcher) ShouldAlert(e collector.Event) bool {
 	return severityRank[e.Severity] >= severityRank[minSev]
 }
 
-// Fire sends an immediate alert to all configured channels.
+// Fire sends an immediate alert to all configured channels, with dedup suppression.
 func (d *Dispatcher) Fire(e collector.Event) {
+	fp := eventFingerprint(e)
+	d.dedupMu.Lock()
+	if expiry, seen := d.dedupCache[fp]; seen && time.Now().Before(expiry) {
+		d.dedupMu.Unlock()
+		slog.Debug("alert suppressed by daemon dedup", "resource", e.Resource, "source", e.Source)
+		return
+	}
+	d.dedupCache[fp] = time.Now().Add(d.cfg.Cooldown)
+	d.dedupMu.Unlock()
+
 	msg := formatAlert(e)
 	for _, ch := range d.channels {
 		if err := ch.send(e, msg); err != nil {
 			slog.Error("alert send failed", "channel", ch.name(), "err", err)
 		}
 	}
+}
+
+// eventFingerprint produces a stable hash for daemon-side dedup.
+// Based on source + action + resource (not time) so repeated events
+// for the same target are grouped within the cooldown window.
+func eventFingerprint(e collector.Event) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s:%s:%s", e.Source, e.Action, e.Resource)
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
 func formatAlert(e collector.Event) string {
