@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/voltagebots/vigilo/internal/alerter"
 	"github.com/voltagebots/vigilo/internal/buffer"
 	"github.com/voltagebots/vigilo/internal/collector"
 	"github.com/voltagebots/vigilo/internal/config"
@@ -39,6 +40,15 @@ func main() {
 	if len(suppressRules) > 0 {
 		slog.Info("suppression rules loaded", "count", len(suppressRules))
 	}
+
+	// Build immediate alerter from config
+	dispatch := alerter.New(alerter.Config{
+		MinSeverity: cfg.Alerter.MinSeverity,
+		Slack:       toAlertSlack(cfg.Alerter.Slack),
+		Telegram:    toAlertTelegram(cfg.Alerter.Telegram),
+		Email:       toAlertEmail(cfg.Alerter.Email),
+		Webhooks:    toAlertWebhooks(cfg.Alerter.Webhooks),
+	})
 
 	// Event bus — buffered to avoid blocking collectors
 	events := make(chan collector.Event, 512)
@@ -73,18 +83,22 @@ func main() {
 	defer netWatcher.Stop()
 	slog.Info("network watcher started", "interval", cfg.PollInterval)
 
-	// Drain event bus → SQLite
+	// Drain event bus → SQLite + immediate alerter
 	go func() {
 		for e := range events {
 			if err := store.Insert(e); err != nil {
 				slog.Error("failed to insert event", "err", err)
-			} else {
-				slog.Debug("event stored",
-					"source", e.Source,
-					"action", e.Action,
-					"resource", e.Resource,
-					"severity", e.Severity,
-				)
+				continue
+			}
+			slog.Debug("event stored",
+				"source", e.Source,
+				"action", e.Action,
+				"resource", e.Resource,
+				"severity", e.Severity,
+			)
+			// Tier-1: fire immediately for high/critical events
+			if dispatch.ShouldAlert(e) {
+				go dispatch.Fire(e)
 			}
 		}
 	}()
@@ -122,4 +136,42 @@ func main() {
 	}
 
 	slog.Info("vigilo daemon stopped")
+}
+
+// Conversion helpers — keep config and alerter packages decoupled.
+
+func toAlertSlack(c *config.SlackConfig) *alerter.SlackConfig {
+	if c == nil {
+		return nil
+	}
+	return &alerter.SlackConfig{WebhookURL: c.WebhookURL}
+}
+
+func toAlertTelegram(c *config.TelegramConfig) *alerter.TelegramConfig {
+	if c == nil {
+		return nil
+	}
+	return &alerter.TelegramConfig{BotToken: c.BotToken, ChatID: c.ChatID}
+}
+
+func toAlertEmail(c *config.EmailConfig) *alerter.EmailConfig {
+	if c == nil {
+		return nil
+	}
+	return &alerter.EmailConfig{
+		SMTPHost: c.SMTPHost,
+		SMTPPort: c.SMTPPort,
+		Username: c.Username,
+		Password: c.Password,
+		From:     c.From,
+		To:       c.To,
+	}
+}
+
+func toAlertWebhooks(ws []config.WebhookConfig) []alerter.WebhookConfig {
+	out := make([]alerter.WebhookConfig, len(ws))
+	for i, w := range ws {
+		out[i] = alerter.WebhookConfig{Name: w.Name, URL: w.URL, Headers: w.Headers}
+	}
+	return out
 }

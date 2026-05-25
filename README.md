@@ -2,248 +2,231 @@
 
 > *Latin: "I watch. I am vigilant."*
 
-Vigilo is an open-source endpoint security daemon for crypto infrastructure. It runs on the server where your hot wallet, signing service, bridge validator, or exchange integration lives — and watches for attack patterns at the OS level **before they reach the chain**.
+OS-level security daemon for crypto infrastructure. Monitors file access, process spawns, and network connections in real time — alerts your team **before an attacker reaches the chain**.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Monitored server (validator / signer / bridge node)         │
+│                                                              │
+│  File watcher ─┐                                             │
+│  Proc poller  ─┼─► Event bus ─► SQLite buffer               │
+│  Net poller   ─┘       │              │                      │
+│                        │              └─► MCP server (:7070) │
+│                        ▼                       ▲             │
+│              Immediate alerter           LLM analyst agent   │
+│         (Slack · Telegram · Email)       (Claude, every 5m)  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Two-tier alerting
+
+| Tier | Latency | Mechanism | Triggers on |
+|---|---|---|---|
+| **Immediate** | ~1 second | Daemon pushes directly | Any `high` / `critical` event |
+| **LLM analysis** | ~5 minutes | Claude correlates event sequences | Attack patterns, cross-server campaigns |
+
+This means a private key access fires a Telegram push **within seconds**, while Claude still analyses the full pattern window to catch multi-step attacks.
 
 ---
 
-## Why OS-level, not on-chain?
+## What it detects
 
-By the time a transaction hits the chain, the private key is already gone. Every crypto hack follows the same sequence on the server first:
-
-```
-1. Attacker gets foothold (RCE, supply chain, compromised dep)
-2. Process reads keystore / .env / private key file   ← Vigilo sees this
-3. Shell spawned or outbound connection made           ← Vigilo sees this
-4. Key exfiltrated to attacker infrastructure         ← Vigilo sees this
-5. On-chain transaction                               (too late)
-```
-
-Vigilo catches steps 2–4. Chain monitoring catches step 5. You want 2–4.
+| Signal | Tier | Severity |
+|---|---|---|
+| Private key / keystore file read | Immediate + LLM | Critical |
+| `.env` or secret file written | Immediate + LLM | High |
+| Shell spawned from node/python (RCE) | LLM | High |
+| Outbound connection to suspicious port | Immediate + LLM | High |
+| Env dump → outbound connection (exfiltration chain) | LLM | Critical |
+| Package install from app process (supply chain) | LLM | High |
+| Privilege escalation (sudo from app process) | LLM | High |
+| Same attack pattern across multiple servers | LLM | Critical |
 
 ---
 
 ## Architecture
 
 ```
-Your Server (crypto infra)
-┌─────────────────────────────────────────────┐
-│  vigilo daemon (Go binary)                  │
-│                                             │
-│  FileWatcher  — inotify on sensitive paths  │
-│  ProcessWatch — /proc, detects shell spawn  │
-│  NetWatch     — /proc/net/tcp, new conns    │
-│                                             │
-│  SQLite buffer (24h retention)              │
-│  MCP server   — exposes query tools         │
-└──────────────────┬──────────────────────────┘
-                   │ MCP (stdio or SSE)
-                   ▼
-┌─────────────────────────────────────────────┐
-│  vigilo-agent (TypeScript)                  │
-│                                             │
-│  Pulls events every 5 min via MCP           │
-│  Claude claude-opus-4-7 analyst             │
-│  Correlates sequences → signals             │
-│  Alerts: Slack                              │
-└─────────────────────────────────────────────┘
+vigilo (Go daemon)              vigilo-agent (TypeScript)
+├── collector/                  ├── collectors/mcp.ts
+│   ├── file.go  (fsnotify)     │    multi-daemon aggregation
+│   ├── process.go (/proc)      ├── agents/analyst.ts
+│   ├── network.go (/proc/net)  │    ├── context compaction
+│   └── suppress.go             │    ├── MOIM preamble
+├── buffer/sqlite.go            │    └── inspector + retry
+│   └── signal_dedup table      └── slack/alerter.ts
+├── alerter/
+│   ├── slack.go   (webhook)
+│   ├── telegram.go (Bot API)
+│   ├── email.go   (SMTP)
+│   └── webhook.go (generic)
+└── mcp/server.go   (5 tools)
 ```
-
-**Two deployment modes:**
-
-| Mode | When to use |
-|---|---|
-| **Standalone** | Daemon + agent on the same server. Only external call is the Anthropic API. |
-| **Hub/spoke** | Daemon on each client server, agent runs centrally (your Cloud Run / VPS). One agent, many daemons. |
-
----
-
-## What Vigilo detects
-
-| Pattern | Signal |
-|---|---|
-| Shell (`bash`/`sh`) spawned from `node`, `python`, `java` | RCE / code injection |
-| Keystore, `.pem`, `wallet.json`, `.env` read by unexpected process | Credential theft / key exfiltration |
-| Outbound connection to port 4444, 1337, 31337 after file access | Active exfiltration |
-| `curl`/`wget` spawned from app process | Data exfiltration |
-| New connection to previously-unseen IP | Lateral movement / C2 |
-| Package install (`npm`, `pip`) from unexpected process | Supply chain persistence |
-| Privilege escalation (`sudo` by app process) | Attacker expanding access |
-
-Vigilo uses Claude to **correlate sequences** — a single file read might be `info`, but file read + network connection to a new IP = `critical`. No rules to write.
 
 ---
 
 ## Quick start
 
-### 1. Install the daemon
-
-**From source** (requires Go 1.23+):
+### 1. Build the daemon
 
 ```bash
-git clone https://github.com/voltagebots/vigilo
-cd vigilo
-go build -o vigilo ./cmd/vigilo
-sudo mv vigilo /usr/local/bin/
-```
-
-**Verify:**
-
-```bash
-vigilo --help
+git clone https://github.com/voltagebots/vigilo && cd vigilo
+go build -o /usr/local/bin/vigilo ./cmd/vigilo/
 ```
 
 ### 2. Configure
 
 ```bash
-sudo mkdir -p /etc/vigilo
-sudo cp config.example.yaml /etc/vigilo/config.yaml
-sudo $EDITOR /etc/vigilo/config.yaml
+cp config.example.yaml /etc/vigilo/config.yaml
+mkdir -p /var/lib/vigilo
 ```
 
-Key settings:
+Minimum config — edit `/etc/vigilo/config.yaml`:
 
 ```yaml
 watch_paths:
-  - $HOME/.ethereum        # Ethereum keystore
-  - $HOME/.bitcoin         # Bitcoin wallet
-  - /app/.env              # App secrets
-  - /app/keystore          # Custom keystore path
+  - /app/keystore
+  - /app/.env
+  - /run/secrets
 
-poll_interval: 5s          # /proc poll frequency
-buffer_retention_hours: 24 # How long to keep events
-mcp_transport: stdio       # stdio (local) or http (remote agent)
+alerter:
+  min_severity: high
+  telegram:
+    bot_token: "YOUR_BOT_TOKEN"
+    chat_id: "-100YOUR_CHAT_ID"
+  slack:
+    webhook_url: https://hooks.slack.com/services/...
 ```
 
-### 3. Run the daemon
-
-**Standalone (daemon + agent on same host):**
-
-```bash
-sudo mkdir -p /var/lib/vigilo
-vigilo -config /etc/vigilo/config.yaml -db /var/lib/vigilo/events.db
-```
-
-**As a systemd service:**
+### 3. Run as a systemd service
 
 ```ini
 # /etc/systemd/system/vigilo.service
 [Unit]
-Description=Vigilo security daemon
+Description=Vigilo Security Daemon
 After=network.target
 
 [Service]
 ExecStart=/usr/local/bin/vigilo -config /etc/vigilo/config.yaml -db /var/lib/vigilo/events.db
 Restart=always
 RestartSec=5
-User=root
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now vigilo
+systemctl enable --now vigilo
+journalctl -u vigilo -f
 ```
 
-### 4. Run the agent
+### 4. Run the LLM analyst agent (optional but recommended)
+
+The agent connects to the daemon via MCP and runs Claude to detect multi-step attack patterns.
 
 ```bash
 cd agent
 cp .env.example .env
-$EDITOR .env   # add ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, VIGILO_ALERT_CHANNEL
-npm install
-npm run dev
+# Fill in: ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, VIGILO_ALERT_CHANNEL
+npm install && npm run dev
 ```
 
-The agent connects to the daemon via MCP (stdio by default), pulls events every 5 minutes, and posts Slack alerts when Claude detects a threat.
+### 5. Multi-server setup (Tailscale)
 
----
-
-## Configuration reference
-
-### Daemon (`config.yaml`)
-
-| Field | Default | Description |
-|---|---|---|
-| `watch_paths` | See example | Directories/files to watch for access. Supports `$HOME`. |
-| `exclude_paths` | `$HOME/.npm`, `$HOME/.cache`, `/tmp` | Never watch these. |
-| `poll_interval` | `5s` | How often to poll `/proc` and `/proc/net/tcp`. |
-| `buffer_retention_hours` | `24` | Events older than this are auto-purged from SQLite. |
-| `mcp_transport` | `stdio` | `stdio` for local agent, `http` for remote agent (SSE). |
-| `mcp_addr` | `:7070` | Bind address — only used when `mcp_transport: http`. |
-
-### Agent (`.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key |
-| `SLACK_BOT_TOKEN` | Yes | Slack bot token (`xoxb-...`) |
-| `VIGILO_ALERT_CHANNEL` | Yes | Slack channel ID for alerts |
-| `SCAN_CRON` | No | Cron schedule (default: `*/5 * * * *`) |
-| `LOOKBACK_MINUTES` | No | Event window per scan (default: `6`) |
-| `VIGILO_MCP_URL` | No | Set to connect to a remote daemon via SSE (e.g. `http://10.0.0.5:7070`) |
-| `VIGILO_DAEMON_BIN` | No | Path to vigilo binary for stdio mode (default: `vigilo`) |
-| `VIGILO_CONFIG` | No | Config path passed to daemon in stdio mode (default: `/etc/vigilo/config.yaml`) |
+```bash
+# On each monitored server: set mcp_transport: http in config.yaml
+# In agent/.env on your central host:
+VIGILO_DAEMON_URLS=validator-1=http://100.64.0.1:7070,signer=http://100.64.0.2:7070
+```
 
 ---
 
 ## MCP tools
 
-The daemon exposes these tools over the MCP protocol. The agent calls them automatically; you can also connect any MCP-compatible client (e.g. Claude Desktop) directly to the daemon for ad-hoc investigation.
+The daemon exposes five tools to any MCP-compatible client:
 
 | Tool | Description |
 |---|---|
-| `get_file_access_events` | File reads/writes to sensitive paths, filterable by severity |
-| `get_process_events` | Suspicious child process spawns |
-| `get_network_events` | Outbound connections to unexpected destinations |
-| `get_all_events` | All sources — used by agent for correlation analysis |
-| `get_critical_events` | High + critical events only — for rapid triage |
+| `get_all_events` | All events in a time window |
+| `get_file_access_events` | File watcher events only |
+| `get_process_events` | Process spawn events only |
+| `get_network_events` | Outbound connection events only |
+| `get_critical_events` | High + critical severity — rapid triage |
 
-All tools accept a `since` (ISO8601) parameter and return JSON arrays.
+---
 
-**Connect Claude Desktop directly to the daemon:**
+## Alert channels
 
-```json
-{
-  "mcpServers": {
-    "vigilo": {
-      "command": "vigilo",
-      "args": ["-config", "/etc/vigilo/config.yaml", "-db", "/var/lib/vigilo/events.db"]
-    }
-  }
-}
+Configured under `alerter:` in `config.yaml`:
+
+| Channel | Notes |
+|---|---|
+| **Slack** | Incoming webhook URL — no bot token needed |
+| **Telegram** | Bot token (BotFather) + group/chat ID — best for mobile push |
+| **Email** | SMTP — Gmail, SendGrid, AWS SES, Mailgun |
+| **Webhook** | Generic JSON POST — PagerDuty, OpsGenie, custom SIEM |
+
+---
+
+## Suppression rules
+
+Drop known-safe events before they reach the buffer:
+
+```yaml
+suppress_rules:
+  - match: /var/backups/
+    source: file_access
+    reason: "nightly backup reads credential dirs"
+  - match: datadog-agent
+    source: process
+    reason: "observability agent — known safe"
 ```
 
 ---
 
-## Signal categories
+## Agent environment variables
 
-When the agent detects a threat pattern, it classifies it into one of:
-
-| Category | Description |
-|---|---|
-| `key_exfiltration` | Private key or keystore accessed then sent externally |
-| `rce` | Remote code execution — shell spawned from app process |
-| `credential_theft` | Env vars or secret files harvested |
-| `supply_chain` | Unexpected package install or dependency modification |
-| `privilege_escalation` | App process gained elevated permissions |
-| `lateral_movement` | Connection to internal hosts or new external infrastructure |
-| `reconnaissance` | Systematic probing without clear exfiltration yet |
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | required | Claude API key |
+| `SLACK_BOT_TOKEN` | required | Slack bot token |
+| `VIGILO_ALERT_CHANNEL` | required | Slack channel ID |
+| `VIGILO_DAEMON_URLS` | — | Multi-server: `label=url,label=url,...` |
+| `VIGILO_MCP_URL` | — | Single remote daemon URL |
+| `VIGILO_DAEMON_BIN` | `vigilo` | Binary path (stdio mode) |
+| `SCAN_CRON` | `*/5 * * * *` | LLM scan schedule |
+| `LOOKBACK_MINUTES` | `6` | Event window per scan |
+| `SIGNAL_COOLDOWN_MS` | `3600000` | Agent-side dedup window (1 hour) |
 
 ---
+
+## What's done
+
+- [x] File watcher (fsnotify, macOS + Linux)
+- [x] Process watcher (Linux `/proc` polling)
+- [x] Network watcher (Linux `/proc/net/tcp`)
+- [x] SQLite event buffer with hourly auto-prune
+- [x] Signal dedup table (per-category cooldown)
+- [x] Suppression rules (config-driven, zero-noise at source)
+- [x] MCP server — stdio and SSE/HTTP transports
+- [x] Immediate alerter — Slack webhook, Telegram Bot, SMTP email, generic webhook
+- [x] LLM analyst agent (Claude Opus) — multi-step pattern detection
+- [x] Multi-daemon aggregation (N servers → one Claude call)
+- [x] Goose patterns: context compaction, MOIM preamble, inspector + retry
+- [x] Signal dedup in agent (in-process cooldown cache)
+- [x] CI (GitHub Actions — Go build/test + TypeScript typecheck)
+- [x] Dockerfile (multi-stage alpine)
 
 ## Roadmap
 
-- [ ] `auditd` integration — kernel-level privilege escalation events
-- [ ] Signal deduplication — suppress repeat alerts for same open issue
-- [ ] Suppression rules — per-path / per-process allowlist in config
-- [ ] GitHub Actions CI — build + test on push
-- [ ] Dockerfile — single container for easy client-side deploy
-- [ ] Hub/spoke dashboard — central view across multiple daemons
-- [ ] eBPF collectors (Phase 3) — sub-millisecond detection latency
-
----
-
-## License
-
-MIT
+- [ ] `auditd` integration — kernel syscall audit, richer than `/proc` polling
+- [ ] Suppression rules for process and network collectors (file only today)
+- [ ] Daemon-side signal dedup (currently agent-side only)
+- [ ] systemd unit file committed to repo
+- [ ] Docker Compose (daemon + agent)
+- [ ] Tailscale deployment guide
+- [ ] PagerDuty / OpsGenie native integration
+- [ ] Web UI — event timeline, signal history
+- [ ] Structured SIEM output (CEF / ECS format)

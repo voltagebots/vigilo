@@ -1,7 +1,6 @@
 # vigilo daemon configuration
 
 # Paths to watch for sensitive file access.
-# Supports $HOME and other env var expansion.
 watch_paths:
   - $HOME/.ethereum
   - $HOME/.bitcoin
@@ -28,15 +27,51 @@ mcp_transport: stdio
 # Only used when mcp_transport = "http"
 # mcp_addr: ":7070"
 
-# How long before the same signal can fire again (passed to agent via MCP metadata)
-# The agent enforces this client-side; set SIGNAL_COOLDOWN_MS in agent/.env too.
+# How long before the same LLM-generated signal can re-alert
 signal_cooldown: 1h
 
-# Suppression rules — events matching any rule are dropped before reaching the buffer.
-# Useful for known-good processes and paths that would otherwise generate noise.
-# match: substring checked against resource path and process name (case-insensitive)
-# source: optional filter — file_access | process | network (omit to match all sources)
-# reason: logged when an event is suppressed (helps with audit trails)
+# ── Immediate alerter ─────────────────────────────────────────────────────────
+# Fires within seconds of detection — no LLM, pure rule-based.
+# The LLM analyst agent still runs on its own schedule for pattern correlation.
+alerter:
+  # Minimum severity to trigger immediate alerts: "high" or "critical"
+  min_severity: high
+
+  # Slack incoming webhook (no bot token needed)
+  # Create at: Slack app → Features → Incoming Webhooks → Add New Webhook
+  slack:
+    webhook_url: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXX
+
+  # Telegram bot — instant mobile push, great for crypto ops teams
+  # 1. Create bot: https://t.me/BotFather → /newbot
+  # 2. Get chat ID: add @userinfobot to your group, it replies with the ID
+  telegram:
+    bot_token: "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+    chat_id: "-100123456789"
+
+  # Email via SMTP (Gmail, SendGrid, Mailgun, AWS SES)
+  # For Gmail: use an App Password, not your account password
+  # email:
+  #   smtp_host: smtp.gmail.com
+  #   smtp_port: 587
+  #   username: alerts@yourcompany.com
+  #   password: your-app-password
+  #   from: alerts@yourcompany.com
+  #   to:
+  #     - oncall@yourcompany.com
+  #     - cto@yourcompany.com
+
+  # Generic webhooks — PagerDuty, OpsGenie, custom SIEM, etc.
+  # webhooks:
+  #   - name: pagerduty
+  #     url: https://events.pagerduty.com/v2/enqueue
+  #     headers:
+  #       Authorization: Token token=your-pagerduty-token
+  #   - name: internal-siem
+  #     url: https://siem.internal/api/events
+
+# ── Suppression rules ─────────────────────────────────────────────────────────
+# Events matching any rule are dropped before reaching the buffer.
 suppress_rules:
   - match: /var/backups/
     source: file_access
@@ -48,4 +83,4 @@ suppress_rules:
 
   - match: /etc/vigilo/
     source: file_access
-    reason: "vigilo config reads its own files on reload"
+    reason: "vigilo reads its own config on reload"
