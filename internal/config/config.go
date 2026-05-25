@@ -43,6 +43,42 @@ type Config struct {
 
 	// Suppress rules — events matching any rule are dropped before buffering
 	SuppressRules []SuppressRule `yaml:"suppress_rules"`
+
+	// Immediate alerter — fires on high/critical events without waiting for LLM analysis
+	Alerter AlerterConfig `yaml:"alerter"`
+}
+
+// AlerterConfig mirrors alerter.Config to avoid import cycles.
+type AlerterConfig struct {
+	MinSeverity string        `yaml:"min_severity"`
+	Slack       *SlackConfig  `yaml:"slack"`
+	Telegram    *TelegramConfig `yaml:"telegram"`
+	Email       *EmailConfig  `yaml:"email"`
+	Webhooks    []WebhookConfig `yaml:"webhooks"`
+}
+
+type SlackConfig struct {
+	WebhookURL string `yaml:"webhook_url"`
+}
+
+type TelegramConfig struct {
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
+}
+
+type EmailConfig struct {
+	SMTPHost string   `yaml:"smtp_host"`
+	SMTPPort int      `yaml:"smtp_port"`
+	Username string   `yaml:"username"`
+	Password string   `yaml:"password"`
+	From     string   `yaml:"from"`
+	To       []string `yaml:"to"`
+}
+
+type WebhookConfig struct {
+	Name    string            `yaml:"name"`
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
 }
 
 var Defaults = Config{
