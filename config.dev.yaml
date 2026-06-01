@@ -1,0 +1,26 @@
+# vigilo dev config — for local testing and Claude Desktop MCP integration
+# Usage: vigilo --config config.dev.yaml --db /tmp/vigilo-dev.db
+
+watch_paths:
+  - ~/.ssh
+  - ~/.ethereum
+  - ~/.bitcoin
+  - ~/.aws/credentials
+  - ~/.gnupg
+
+exclude_paths:
+  - ~/.npm
+  - ~/.cache
+  - /tmp
+
+poll_interval: 5s
+buffer_retention_hours: 24
+
+# stdio = Claude Desktop spawns vigilo and talks over stdin/stdout
+mcp_transport: stdio
+
+signal_cooldown: 5m
+
+# No immediate alerter in dev — Claude Desktop is the analyst
+alerter:
+  min_severity: critical

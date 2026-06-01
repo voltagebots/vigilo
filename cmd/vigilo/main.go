@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,10 +19,23 @@ import (
 	"github.com/voltagebots/vigilo/internal/web"
 )
 
+// Set by goreleaser via -ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
-	configPath := flag.String("config", "/etc/vigilo/config.yaml", "Path to config file")
-	dbPath := flag.String("db", "/var/lib/vigilo/events.db", "SQLite database path")
+	configPath  := flag.String("config", "/etc/vigilo/config.yaml", "Path to config file")
+	dbPath      := flag.String("db", "/var/lib/vigilo/events.db", "SQLite database path")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("vigilo %s (%s) built %s\n", version, commit, date)
+		os.Exit(0)
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)

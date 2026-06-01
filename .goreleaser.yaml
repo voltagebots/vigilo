@@ -1,0 +1,80 @@
+version: 2
+
+project_name: vigilo
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: vigilo
+    main: ./cmd/vigilo
+    binary: vigilo
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - config.example.yaml
+      - README.md
+      - SECURITY.md
+      - deploy/vigilo.service
+      - deploy/install.sh
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: voltagebots
+    name: vigilo
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## Vigilo {{ .Version }}
+
+    OS-level security daemon for crypto infrastructure — monitors file access,
+    process spawns, and network connections in real time.
+
+    ### Quick start
+
+    ```bash
+    tar xzf vigilo_{{ .Version }}_linux_amd64.tar.gz
+    sudo ./install.sh
+    ```
+
+    See [README](https://github.com/voltagebots/vigilo#readme) and
+    [SECURITY.md](https://github.com/voltagebots/vigilo/blob/main/SECURITY.md)
+    for full setup instructions.
