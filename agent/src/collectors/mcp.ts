@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 export interface VigiloEvent {
   id: number;
@@ -40,7 +40,7 @@ export class VigiloMCPClient {
   async connect(transport: MCPTransport): Promise<void> {
     const t = transport.type === 'stdio'
       ? new StdioClientTransport({ command: transport.command, args: transport.args ?? [] })
-      : new StreamableHTTPClientTransport(new URL(transport.url));
+      : new SSEClientTransport(new URL(transport.url + '/sse'));
     await this.client.connect(t);
   }
 

@@ -20,7 +20,7 @@ var sensitivePatterns = []struct {
 	{"wallet.json", SeverityCritical},
 	{".pem", SeverityCritical},
 	{".key", SeverityCritical},
-	{"private", SeverityHigh},
+	{"private_key", SeverityHigh},
 	{"mnemonic", SeverityCritical},
 	{"seed", SeverityHigh},
 	{"secret", SeverityHigh},

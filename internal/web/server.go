@@ -349,3 +349,11 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.code = code
 	rw.ResponseWriter.WriteHeader(code)
 }
+
+// Flush delegates to the underlying writer so SSE handlers can stream events.
+// Required because embedding an interface does not promote concrete-type methods.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

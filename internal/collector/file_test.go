@@ -18,6 +18,8 @@ func TestSeverityForPath(t *testing.T) {
 		{"/app/.env", SeverityHigh},
 		{"/home/user/.pem", SeverityCritical},
 		{"/secrets/private_key", SeverityHigh},
+		// macOS paths start with /private/var — must not downgrade id_rsa to high
+		{"/private/var/folders/tmp/id_rsa", SeverityCritical},
 		{"/home/user/.ethereum/keystore", SeverityHigh},
 		{"/home/user/.ssh/id_rsa", SeverityCritical},
 		{"/home/user/.ssh/id_ed25519", SeverityCritical},

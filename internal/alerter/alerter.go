@@ -195,11 +195,12 @@ func (d *Dispatcher) pruneDedupLoop() {
 }
 
 // eventFingerprint produces a stable hash for daemon-side dedup.
-// Based on source + action + resource (not time) so repeated events
-// for the same target are grouped within the cooldown window.
+// Uses source + resource only — action is intentionally excluded so that
+// create vs write to the same file are treated as the same signal within
+// the cooldown window (prevents alert floods for repeated access patterns).
 func eventFingerprint(e collector.Event) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s:%s:%s", e.Source, e.Action, e.Resource)
+	fmt.Fprintf(h, "%s:%s", e.Source, e.Resource)
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
