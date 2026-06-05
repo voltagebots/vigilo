@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { APIError } from '@anthropic-ai/sdk';
 import { createHash } from 'crypto';
 import { VigiloEvent } from '../collectors/mcp';
 
@@ -37,7 +37,14 @@ Look for attack patterns including:
 
 For each threat sequence, output one signal. Correlate across sources and servers.
 
-Respond ONLY with a valid JSON array of signals. No markdown, no explanation outside the JSON:
+BEFORE the JSON, you MUST emit a <dup_check> block. In it, list each signal you plan to emit and confirm it is semantically distinct from the others. Same root cause expressed differently (e.g. two processes reading the same key file) counts as ONE signal — collapse them. Remove duplicates before the JSON.
+
+<dup_check>
+1. [title] — distinct from others because: [reason]
+2. [title] — distinct from others because: [reason]
+</dup_check>
+
+Then respond with a valid JSON array of signals. No markdown, no explanation outside the dup_check block and the JSON:
 [{
   "severity": "low|medium|high|critical",
   "category": "key_exfiltration|rce|credential_theft|supply_chain|privilege_escalation|lateral_movement|reconnaissance",
@@ -48,7 +55,7 @@ Respond ONLY with a valid JSON array of signals. No markdown, no explanation out
   "server": "server label or null if cross-server"
 }]
 
-If no threats detected, respond with [].`;
+If no threats detected, emit <dup_check>none</dup_check> then [].`;
 
 /**
  * Stable dedup hash for a signal — based on category + title fingerprint.
@@ -62,8 +69,6 @@ export function signalDedupHash(category: string, title: string, server?: string
 }
 
 // ── Goose pattern: Context compaction ────────────────────────────────────────
-// Keep all critical/high events; sample medium/info to stay within ~150 events.
-// Returns the compacted list and a note to inject into the prompt.
 const MAX_EVENTS = 150;
 const SAMPLE_LOW_PRIORITY_EVERY = 3;
 
@@ -72,19 +77,19 @@ function compactEvents(events: VigiloEvent[]): { compacted: VigiloEvent[]; note:
     return { compacted: events, note: '' };
   }
 
-  const high = events.filter(e => e.severity === 'critical' || e.severity === 'high');
-  const low  = events.filter(e => e.severity === 'medium'   || e.severity === 'info');
+  const high    = events.filter(e => e.severity === 'critical' || e.severity === 'high');
+  const low     = events.filter(e => e.severity === 'medium'   || e.severity === 'info');
   const sampled = low.filter((_, i) => i % SAMPLE_LOW_PRIORITY_EVERY === 0);
   const compacted = [...high, ...sampled].slice(0, MAX_EVENTS);
 
-  const note = `[Context compacted: ${events.length} total events → ${compacted.length} shown. ` +
+  const note =
+    `[Context compacted: ${events.length} total events → ${compacted.length} shown. ` +
     `All ${high.length} critical/high events included; medium/info sampled 1-in-${SAMPLE_LOW_PRIORITY_EVERY}.]`;
 
   return { compacted, note };
 }
 
 // ── Goose pattern: MOIM preamble ─────────────────────────────────────────────
-// Inject situational awareness before the event list so Claude knows the scope.
 function buildMoim(events: VigiloEvent[], servers: string[]): string {
   const serverList = servers.length > 0 ? servers.join(', ') : 'local';
   const bySeverity = {
@@ -100,31 +105,78 @@ function buildMoim(events: VigiloEvent[], servers: string[]): string {
   ].join('  ');
 }
 
-// ── Goose pattern: Inspector — response validation + single retry ─────────────
+// ── Backward scan helpers (from Anthropic defending-code reference harness) ───
+//
+// Agents often emit structured content mid-response with trailing prose.
+// Naive last-message or greedy-regex extraction returns the prose or a
+// malformed superset. Scanning from the end finds the last complete block.
+
+// Finds the last complete [...] array in text.
+// Greedy /\[[\s\S]*\]/ matches first '[' to last ']' — breaks when Claude
+// emits prose after the array. Backward scan is precise.
+function findLastJsonArray(text: string): string | null {
+  let depth = 0, end = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if      (ch === ']') { if (end === -1) end = i; depth++; }
+    else if (ch === '[') { if (--depth === 0) return text.slice(i, end + 1); }
+  }
+  return null;
+}
+
+// Finds the last <tag>…</tag> block via backward scan.
+function findTaggedContent(text: string, tag: string): string | null {
+  const close = `</${tag}>`, open = `<${tag}>`;
+  const ci = text.lastIndexOf(close);
+  if (ci === -1) return null;
+  const oi = text.lastIndexOf(open, ci);
+  if (oi === -1) return null;
+  return text.slice(oi + open.length, ci);
+}
+
 function parseSignals(raw: string): Omit<Signal, 'id' | 'detectedAt'>[] | null {
   try {
-    const match = raw.match(/\[[\s\S]*\]/);
-    if (!match) return null;
-    const parsed = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return null;
-    return parsed;
+    const arr = findLastJsonArray(raw);
+    if (!arr) return null;
+    const parsed = JSON.parse(arr);
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-async function callClaude(userContent: string, retrying = false): Promise<string> {
-  const msg = await client.messages.create({
-    model: 'claude-opus-4-7',
-    max_tokens: 4096,
-    system: SYSTEM,
-    messages: [
-      { role: 'user', content: userContent },
-      ...(retrying ? [] : []),
-    ],
-  });
-  return msg.content[0].type === 'text' ? msg.content[0].text : '[]';
+// ── Exponential backoff on transient API errors ───────────────────────────────
+//
+// The reference harness resumes Claude Code CLI sessions on 429/5xx.
+// For the Messages API, session state lives in the messages[] array —
+// we rebuild it on each retry, which is equivalent.
+
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
+const MAX_ATTEMPTS = 6;
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function callClaude(messages: Anthropic.MessageParam[]): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(Math.min(2 ** attempt * 1_000, 30_000));
+    try {
+      const msg = await client.messages.create({
+        model: 'claude-opus-4-7',
+        max_tokens: 4096,
+        system: SYSTEM,
+        messages,
+      });
+      return msg.content[0].type === 'text' ? msg.content[0].text : '[]';
+    } catch (err) {
+      const status = (err as APIError)?.status;
+      if (status != null && RETRYABLE_STATUS.has(status)) { lastErr = err; continue; }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
+
+// ── Main export ───────────────────────────────────────────────────────────────
 
 export async function analyzeEvents(
   events: VigiloEvent[],
@@ -142,17 +194,40 @@ export async function analyzeEvents(
     `\nAnalyze these ${compacted.length} OS-level events for attack patterns:\n\n${JSON.stringify(indexed, null, 2)}`,
   ].filter(Boolean).join('\n');
 
-  // First attempt
-  let raw = await callClaude(userContent);
+  const baseMessages: Anthropic.MessageParam[] = [
+    { role: 'user', content: userContent },
+  ];
+
+  let raw = await callClaude(baseMessages);
+
+  // ── Forced dedup reasoning gate ───────────────────────────────────────────
+  // If <dup_check> is absent, Claude skipped its dedup reasoning pass.
+  // Correct with a single follow-up turn (conversation context preserved).
+  if (!findTaggedContent(raw, 'dup_check')) {
+    raw = await callClaude([
+      ...baseMessages,
+      { role: 'assistant', content: raw },
+      {
+        role: 'user',
+        content: 'You must emit a <dup_check>…</dup_check> block before the JSON array. ' +
+          'Re-emit your full response with the dedup reasoning included.',
+      },
+    ]);
+  }
+
   let parsed = parseSignals(raw);
 
-  // Inspector: retry once on malformed JSON
+  // ── Inspector: single retry on malformed JSON ─────────────────────────────
   if (parsed === null) {
-    raw = await callClaude(
-      userContent +
-      '\n\n[Previous response was not valid JSON. Respond ONLY with the JSON array, no prose.]',
-      true,
-    );
+    raw = await callClaude([
+      ...baseMessages,
+      { role: 'assistant', content: raw },
+      {
+        role: 'user',
+        content: '[Previous response did not contain a valid JSON array. ' +
+          'Respond with <dup_check>…</dup_check> then ONLY the JSON array — no other prose.]',
+      },
+    ]);
     parsed = parseSignals(raw);
   }
 
