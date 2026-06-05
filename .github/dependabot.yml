@@ -1,0 +1,61 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      non-breaking:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - security
+
+  # npm (TypeScript agent)
+  - package-ecosystem: npm
+    directory: /agent
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      non-breaking:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps/agent)"
+    labels:
+      - dependencies
+      - security
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
