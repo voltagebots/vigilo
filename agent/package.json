@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.102.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@slack/web-api": "^7.0.0",
     "node-cron": "^3.0.0",
@@ -19,9 +19,9 @@
     "pino-pretty": "^11.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.20",
     "@types/node-cron": "^3.0.0",
-    "tsx": "^4.0.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.4.0"
   }
 }
