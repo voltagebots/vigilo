@@ -111,6 +111,32 @@ supply_chain_guard:
       - registry.npmjs.org
 ```
 
+## IOC matching (network)
+
+Port heuristics structurally miss C2/exfil over :443 (a "safe" port) — which is
+exactly what the 2026-07 DPRK infostealer used (Telegram Bot-API C2 at
+149.154.166.110:443). The IOC store closes that gap: the network collector
+matches every new outbound connection's remote IP against known-bad ranges
+**before** the port logic, so a known-bad IP is flagged regardless of port.
+
+The store is the seam the security wiki feeds — confirmed-bad indicators become
+detections with no code change.
+
+```yaml
+ioc:
+  include_known_c2: false   # opt into built-in ranges (Telegram etc.).
+                            # Leave off on any host running vigilo's own
+                            # Telegram alerter, or it will self-alert.
+  ip_ranges:                # operator/wiki-supplied indicators
+    - cidr: 149.154.160.0/20
+      label: "Telegram C2 (Contagious Interview)"
+      severity: critical
+```
+
+Built-in `KnownC2IPRanges` (opt-in via `include_known_c2`) currently covers the
+Telegram ranges from the 2026-07 incident. Extensible to file-path and
+process-name indicators via the same `IOCStore`.
+
 ## Current detections
 
 | Ecosystem | Finding (action) | Severity |

@@ -64,6 +64,30 @@ type Config struct {
 	// supply-chain tampering across pluggable ecosystems (Terraform today;
 	// npm/pip/cargo as they're added).
 	SupplyChainGuard SupplyChainGuardConfig `yaml:"supply_chain_guard"`
+
+	// IOC configures indicator-of-compromise matching (known-bad IP ranges the
+	// network collector flags regardless of port).
+	IOC IOCConfig `yaml:"ioc"`
+}
+
+// IOCConfig holds indicator-of-compromise indicators fed to collectors.
+// This is the seam the security wiki populates: confirmed-bad indicators become
+// detections without code changes.
+type IOCConfig struct {
+	// IncludeKnownC2 opts into the built-in KnownC2IPRanges (Telegram etc.).
+	// Off by default — enable only on hosts where such egress is anomalous
+	// (a host running vigilo's own Telegram alerter would self-alert).
+	IncludeKnownC2 bool `yaml:"include_known_c2"`
+
+	// IPRanges are operator/wiki-supplied bad-IP indicators.
+	IPRanges []IOCIPRangeConfig `yaml:"ip_ranges"`
+}
+
+// IOCIPRangeConfig is one bad-IP indicator.
+type IOCIPRangeConfig struct {
+	CIDR     string `yaml:"cidr"`
+	Label    string `yaml:"label"`
+	Severity string `yaml:"severity"` // info|medium|high|critical (default high)
 }
 
 // SupplyChainGuardConfig configures the generic supply-chain guard collector.

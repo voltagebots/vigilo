@@ -102,6 +102,10 @@ func main() {
 	slog.Info("process watcher started", "interval", cfg.PollInterval)
 
 	netWatcher := collector.NewNetworkWatcher(cfg.PollInterval, events, suppress)
+	if iocStore := buildIOCStore(cfg.IOC); !iocStore.Empty() {
+		netWatcher.SetIOCStore(iocStore)
+		slog.Info("ioc matching enabled", "include_known_c2", cfg.IOC.IncludeKnownC2, "custom_ranges", len(cfg.IOC.IPRanges))
+	}
 	netWatcher.Start()
 	defer netWatcher.Stop()
 	slog.Info("network watcher started", "interval", cfg.PollInterval)
@@ -245,6 +249,23 @@ func buildEcosystems(cfg config.SupplyChainGuardConfig) []collector.Ecosystem {
 		out = append(out, collector.NewNpmEcosystem(npm.AllowedRegistries))
 	}
 	return out
+}
+
+// buildIOCStore assembles the indicator store from config: optional built-in
+// C2 ranges plus operator/wiki-supplied ranges.
+func buildIOCStore(cfg config.IOCConfig) *collector.IOCStore {
+	var ranges []collector.IOCIPRange
+	if cfg.IncludeKnownC2 {
+		ranges = append(ranges, collector.KnownC2IPRanges...)
+	}
+	for _, r := range cfg.IPRanges {
+		ranges = append(ranges, collector.IOCIPRange{
+			CIDR:     r.CIDR,
+			Label:    r.Label,
+			Severity: collector.Severity(r.Severity),
+		})
+	}
+	return collector.NewIOCStore(ranges)
 }
 
 // Conversion helpers — keep config and alerter packages decoupled.

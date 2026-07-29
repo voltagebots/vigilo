@@ -34,10 +34,15 @@ type connKey struct {
 type NetworkWatcher struct {
 	interval time.Duration
 	suppress *SuppressMatcher
+	ioc      *IOCStore
 	out      chan<- Event
 	seen     map[connKey]struct{}
 	stop     chan struct{}
 }
+
+// SetIOCStore attaches an indicator-of-compromise store consulted on every new
+// outbound connection (matched before port heuristics so C2-over-443 is caught).
+func (nw *NetworkWatcher) SetIOCStore(s *IOCStore) { nw.ioc = s }
 
 func NewNetworkWatcher(interval time.Duration, out chan<- Event, suppress ...*SuppressMatcher) *NetworkWatcher {
 	var sm *SuppressMatcher
@@ -118,6 +123,23 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 	}
 	remoteIP := net.ParseIP(c.remoteIP)
 	if remoteIP == nil || remoteIP.IsLoopback() {
+		return
+	}
+
+	// IOC match takes precedence — a known-bad IP is flagged regardless of port,
+	// catching C2/exfil over 443 that port heuristics treat as "safe".
+	if m, ok := nw.ioc.MatchIP(c.remoteIP); ok {
+		e := Event{
+			Source:    SourceNetwork,
+			Timestamp: time.Now(),
+			Action:    "connect",
+			Resource:  fmt.Sprintf("%s:%d", c.remoteIP, c.remotePort),
+			Detail:    "outbound connection to known-bad indicator: " + m.Label,
+			Severity:  m.Severity,
+		}
+		if !nw.suppress.IsSuppressed(e) {
+			nw.out <- e
+		}
 		return
 	}
 
