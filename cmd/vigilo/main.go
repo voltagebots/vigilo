@@ -106,6 +106,33 @@ func main() {
 	defer netWatcher.Stop()
 	slog.Info("network watcher started", "interval", cfg.PollInterval)
 
+	if cfg.SupplyChainGuard.Enabled {
+		ecosystems := buildEcosystems(cfg.SupplyChainGuard)
+		if len(ecosystems) == 0 {
+			slog.Warn("supply-chain guard enabled but no ecosystems configured")
+		} else {
+			roots := cfg.SupplyChainGuard.Roots
+			if len(roots) == 0 {
+				roots = []string{"$HOME"}
+			}
+			scGuard := collector.NewSupplyChainGuard(
+				roots,
+				cfg.SupplyChainGuard.ScanInterval,
+				ecosystems,
+				events,
+				suppress,
+			)
+			scGuard.Start()
+			defer scGuard.Stop()
+			names := make([]string, len(ecosystems))
+			for i, e := range ecosystems {
+				names[i] = e.Name()
+			}
+			slog.Info("supply-chain guard started",
+				"roots", roots, "interval", cfg.SupplyChainGuard.ScanInterval, "ecosystems", names)
+		}
+	}
+
 	if cfg.AuditdLogPath != "" {
 		auditWatcher := collector.NewAuditdWatcher(cfg.AuditdLogPath, events, suppress)
 		if err := auditWatcher.Start(); err != nil {
@@ -205,6 +232,19 @@ func main() {
 	}
 
 	slog.Info("vigilo daemon stopped")
+}
+
+// buildEcosystems assembles the enabled supply-chain ecosystem analyzers from
+// config. Add a case here (and a config sub-block) to register a new ecosystem.
+func buildEcosystems(cfg config.SupplyChainGuardConfig) []collector.Ecosystem {
+	var out []collector.Ecosystem
+	if tf := cfg.Terraform; tf != nil && tf.Enabled {
+		out = append(out, collector.NewTerraformEcosystem(tf.AllowedProviderPrefixes, tf.PinnedHashes))
+	}
+	if npm := cfg.Npm; npm != nil && npm.Enabled {
+		out = append(out, collector.NewNpmEcosystem(npm.AllowedRegistries))
+	}
+	return out
 }
 
 // Conversion helpers — keep config and alerter packages decoupled.

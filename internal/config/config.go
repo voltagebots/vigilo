@@ -59,6 +59,51 @@ type Config struct {
 
 	// Immediate alerter — fires on high/critical events without waiting for LLM analysis
 	Alerter AlerterConfig `yaml:"alerter"`
+
+	// SupplyChainGuard scans dependency manifests / lockfiles / CLI config for
+	// supply-chain tampering across pluggable ecosystems (Terraform today;
+	// npm/pip/cargo as they're added).
+	SupplyChainGuard SupplyChainGuardConfig `yaml:"supply_chain_guard"`
+}
+
+// SupplyChainGuardConfig configures the generic supply-chain guard collector.
+// Each ecosystem has its own sub-block; an ecosystem with Enabled=false (or
+// absent) is not registered.
+type SupplyChainGuardConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Roots to scan for manifests/lockfiles (env vars expanded). Defaults to
+	// $HOME when empty.
+	Roots []string `yaml:"roots"`
+
+	// How often to rescan. Defaults to 5m when zero.
+	ScanInterval time.Duration `yaml:"scan_interval"`
+
+	// Per-ecosystem configuration.
+	Terraform *TerraformEcosystemConfig `yaml:"terraform"`
+	Npm       *NpmEcosystemConfig       `yaml:"npm"`
+}
+
+// NpmEcosystemConfig configures the npm ecosystem analyzer.
+type NpmEcosystemConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Allowlisted registry hosts. Empty = registry.npmjs.org only.
+	AllowedRegistries []string `yaml:"allowed_registries"`
+}
+
+// TerraformEcosystemConfig configures the Terraform ecosystem analyzer.
+type TerraformEcosystemConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Allowlisted provider source prefixes. Empty = official HashiCorp only.
+	// Add your org namespaces, e.g. "registry.terraform.io/blockopsnetwork/".
+	AllowedProviderPrefixes []string `yaml:"allowed_provider_prefixes"`
+
+	// Optional pinned known-good hashes, keyed "source@version" -> list of
+	// acceptable h1:/zh: hashes. A lockfile whose hashes miss all of these
+	// (mirror swap) is flagged critical.
+	PinnedHashes map[string][]string `yaml:"pinned_hashes"`
 }
 
 // AlerterConfig mirrors alerter.Config to avoid import cycles.
