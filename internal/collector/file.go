@@ -64,7 +64,7 @@ func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*Supp
 
 func (fw *FileWatcher) Start() error {
 	for _, p := range fw.paths {
-		expanded := os.ExpandEnv(p)
+		expanded := expandPath(p)
 		if err := fw.addRecursive(expanded); err != nil {
 			slog.Warn("file watcher: cannot watch path", "path", expanded, "err", err)
 		}
@@ -95,7 +95,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 
 func (fw *FileWatcher) isExcluded(path string) bool {
 	for _, ex := range fw.exclude {
-		if strings.HasPrefix(path, os.ExpandEnv(ex)) {
+		if strings.HasPrefix(path, expandPath(ex)) {
 			return true
 		}
 	}

@@ -112,12 +112,14 @@ suppress_rules:
 # defaulted root would silently scan nothing. Point this at the directories
 # where source checkouts actually live, and make sure they are readable under
 # the unit's ProtectSystem=strict / ReadOnlyPaths settings.
+# `~` and $VAR are both expanded. Roots that don't resolve to a real directory
+# are dropped with an ERROR rather than silently scanning nothing.
 #
 # supply_chain_guard:
 #   enabled: true
 #   scan_interval: 15m
 #   roots:
-#     - /home/dev/src        # only $VAR is expanded, not `~`
+#     - /home/dev/src
 #     - /opt/checkouts
 #   terraform:
 #     # Provider source prefixes you trust. Defaults to official HashiCorp only;

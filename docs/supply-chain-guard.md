@@ -97,8 +97,8 @@ Every ecosystem must satisfy (enforced by `runEcosystemConformance`):
 ```yaml
 supply_chain_guard:
   enabled: true
-  roots: ["$HOME/code"]      # REQUIRED when enabled — no default.
-                             # Only $VAR is expanded, not `~`.
+  roots: ["~/code"]          # REQUIRED when enabled — no default.
+                             # `~` and $VAR are both expanded.
                              # Roots that don't exist are dropped with an
                              # ERROR; if none survive, the guard won't start.
   scan_interval: 5m

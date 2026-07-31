@@ -158,3 +158,38 @@ func TestEmitUnblocksOnStop(t *testing.T) {
 		t.Fatal("emit did not unblock after Stop — shutdown would hang")
 	}
 }
+
+// Operators write `~/src`, not `$HOME/src`. os.ExpandEnv does not touch `~`,
+// so before expandPath such a root was handed to the OS verbatim and silently
+// matched nothing — the same fail-silent class as an unusable default root.
+func TestTildeRootIsExpanded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sub := filepath.Join(home, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(t, []string{"~/src"}, make(chan Event, 1))
+	got := g.Roots()
+	if len(got) != 1 || got[0] != sub {
+		t.Fatalf("tilde root not expanded: %v, want [%s]", got, sub)
+	}
+}
+
+func TestExpandPathForms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MYDIR", "/opt/x")
+	cases := map[string]string{
+		"~":         home,
+		"~/a/b":     filepath.Join(home, "a", "b"),
+		"$MYDIR/y":  "/opt/x/y",
+		"/abs/path": "/abs/path",
+		"~notauser": "~notauser", // only `~` and `~/` are user-home forms
+	}
+	for in, want := range cases {
+		if got := expandPath(in); got != want {
+			t.Errorf("expandPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

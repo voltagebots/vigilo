@@ -72,7 +72,7 @@ func NewSupplyChainGuard(roots []string, interval time.Duration, ecosystems []Ec
 	}
 	expanded := make([]string, 0, len(roots))
 	for _, r := range roots {
-		p := os.ExpandEnv(r)
+		p := expandPath(r)
 		if p == "" || p == "/" || p == "." {
 			slog.Error("supply-chain guard: refusing unusable scan root — NO COVERAGE for this root",
 				"configured", r, "expanded", p)

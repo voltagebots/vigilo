@@ -96,7 +96,7 @@ type IOCIPRangeConfig struct {
 type SupplyChainGuardConfig struct {
 	Enabled bool `yaml:"enabled"`
 
-	// Roots to scan for manifests/lockfiles. Only $VAR is expanded, not `~`.
+	// Roots to scan for manifests/lockfiles. Both `~` and $VAR are expanded.
 	// REQUIRED when Enabled — there is no default: the service account is
 	// created with --no-create-home, so a defaulted $HOME would silently
 	// resolve to nothing and every scan would inspect zero files.
