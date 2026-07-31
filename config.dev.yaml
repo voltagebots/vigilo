@@ -24,3 +24,17 @@ signal_cooldown: 5m
 # No immediate alerter in dev — Claude Desktop is the analyst
 alerter:
   min_severity: critical
+
+# Supply-chain guard — scans local source checkouts for tampered manifests.
+# Point `roots` at where you actually keep source; there is no implicit default.
+# Note: only $VAR is expanded, not `~` — use $HOME.
+supply_chain_guard:
+  enabled: true
+  scan_interval: 5m
+  roots:
+    - $HOME/src
+
+# IOC matching. include_known_c2 stays off here: this machine may well be the
+# one running vigilo's own Telegram alerter, which would self-alert.
+ioc:
+  include_known_c2: false

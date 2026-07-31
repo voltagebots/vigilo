@@ -1,6 +1,10 @@
 package collector
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestIOCStoreMatchesIncidentC2(t *testing.T) {
 	// The 2026-07 infostealer's C2 IP, over :443 — the case port heuristics miss.
@@ -61,5 +65,48 @@ func TestIOCStoreDefaultSeverity(t *testing.T) {
 	m, ok := s.MatchIP("192.0.2.1")
 	if !ok || m.Severity != SeverityHigh {
 		t.Errorf("missing severity should default to high, got %s ok=%v", m.Severity, ok)
+	}
+}
+
+// The C2 session from the 2026-07 incident was a long-lived Telegram Bot-API
+// connection. On install-on-a-suspect-host — and on every Restart=always
+// restart — that connection already exists when the daemon starts, so the
+// baseline scan must still report it. Baseline suppression is for the noisy
+// port heuristics only.
+func TestBaselineScanStillReportsKnownBadIndicator(t *testing.T) {
+	out := make(chan Event, 4)
+	nw := NewNetworkWatcher(time.Minute, out)
+	nw.SetIOCStore(NewIOCStore(KnownC2IPRanges))
+
+	c := connKey{
+		localIP: "10.0.0.2", localPort: 51234,
+		remoteIP: "149.154.166.110", remotePort: 443, // the incident's C2, on a "safe" port
+	}
+	if !nw.checkIOC(c) {
+		t.Fatal("known-bad indicator not matched")
+	}
+	select {
+	case e := <-out:
+		if e.Severity != SeverityCritical {
+			t.Errorf("severity = %s, want critical", e.Severity)
+		}
+		if !strings.Contains(e.Resource, "149.154.166.110:443") {
+			t.Errorf("resource = %q", e.Resource)
+		}
+	default:
+		t.Fatal("resident C2 session was silently absorbed into the baseline")
+	}
+}
+
+func TestCheckIOCIgnoresCleanRemote(t *testing.T) {
+	out := make(chan Event, 4)
+	nw := NewNetworkWatcher(time.Minute, out)
+	nw.SetIOCStore(NewIOCStore(KnownC2IPRanges))
+	c := connKey{remoteIP: "93.184.216.34", remotePort: 443}
+	if nw.checkIOC(c) {
+		t.Fatal("clean remote matched an indicator")
+	}
+	if len(out) != 0 {
+		t.Fatal("clean remote produced an event")
 	}
 }

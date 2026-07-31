@@ -50,7 +50,22 @@ func (t *TerraformEcosystem) Matches(filename string) bool {
 func (t *TerraformEcosystem) Inspect(path string, content []byte) []Event {
 	switch filepath.Base(path) {
 	case ".terraform.lock.hcl":
-		return t.inspectLockfile(path, parseLockfile(string(content)))
+		locks := parseLockfile(string(content))
+		// A non-empty lockfile that yields no provider blocks means the parser
+		// was defeated — by malformed HCL, an unhandled form, or deliberate
+		// evasion. Silence there is indistinguishable from "clean", so treat
+		// the parse failure itself as the finding.
+		if len(locks) == 0 && strings.TrimSpace(string(content)) != "" {
+			return []Event{{
+				Source:    SourceSupplyChain,
+				Timestamp: time.Now(),
+				Action:    "provider_lockfile_unparseable",
+				Resource:  path,
+				Detail:    "lockfile is non-empty but no provider blocks were parsed — malformed HCL or evasion attempt (in " + path + ")",
+				Severity:  SeverityHigh,
+			}}
+		}
+		return t.inspectLockfile(path, locks)
 	case ".terraformrc", "terraform.rc":
 		return t.inspectTerraformrc(path, content)
 	}
@@ -106,21 +121,38 @@ func (t *TerraformEcosystem) inspectLockfile(file string, locks []ProviderLock) 
 	return out
 }
 
-// inspectTerraformrc flags a provider mirror, which redirects `init` away from
-// the official registry — the setup step for a mirror-swap attack.
+// terraformProviderRedirects are the CLI-config mechanisms that redirect where
+// `init` sources a provider binary from. dev_overrides is the most dangerous:
+// it points terraform at an arbitrary local directory and skips registry AND
+// lockfile checksum verification entirely.
+var terraformProviderRedirects = []struct {
+	token  string
+	detail string
+	sev    Severity
+}{
+	{"dev_overrides", "Terraform CLI config defines dev_overrides — init/plan will load an unverified local provider binary, bypassing both the registry and lockfile checksums", SeverityCritical},
+	{"network_mirror", "Terraform CLI config defines a provider mirror — init will fetch providers from a non-registry source", SeverityHigh},
+	{"filesystem_mirror", "Terraform CLI config defines a provider mirror — init will fetch providers from a non-registry source", SeverityHigh},
+}
+
+// inspectTerraformrc flags provider-source redirection, the setup step for
+// serving a trojaned provider under a trusted name.
 func (t *TerraformEcosystem) inspectTerraformrc(file string, content []byte) []Event {
 	lower := strings.ToLower(string(content))
-	if strings.Contains(lower, "network_mirror") || strings.Contains(lower, "filesystem_mirror") {
-		return []Event{{
-			Source:    SourceSupplyChain,
-			Timestamp: time.Now(),
-			Action:    "provider_mirror_config",
-			Resource:  file,
-			Detail:    "Terraform CLI config defines a provider mirror — init will fetch providers from a non-registry source",
-			Severity:  SeverityHigh,
-		}}
+	var out []Event
+	for _, r := range terraformProviderRedirects {
+		if strings.Contains(lower, r.token) {
+			out = append(out, Event{
+				Source:    SourceSupplyChain,
+				Timestamp: time.Now(),
+				Action:    "provider_mirror_config",
+				Resource:  file,
+				Detail:    r.detail + " (in " + file + ")",
+				Severity:  r.sev,
+			})
+		}
 	}
-	return nil
+	return out
 }
 
 func (t *TerraformEcosystem) sourceAllowed(source string) bool {
@@ -190,13 +222,32 @@ func parseLockfile(content string) []ProviderLock {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
 			continue
 		}
-		if cur == nil {
-			if src, ok := parseProviderHeader(line); ok {
-				cur = &ProviderLock{Source: src}
+		// A provider header always starts a new block, even if the previous one
+		// was never closed — a missing `}` must not make every subsequent
+		// provider invisible.
+		if src, ok := parseProviderHeader(line); ok {
+			if cur != nil {
+				locks = append(locks, *cur)
+			}
+			cur = &ProviderLock{Source: src}
+			inHashes = false
+			// Single-line block: `provider "x" { ... }` closes immediately.
+			if i := strings.Index(line, "{"); i >= 0 && strings.Contains(line[i+1:], "}") {
+				locks = append(locks, *cur)
+				cur = nil
 			}
 			continue
 		}
+		if cur == nil {
+			continue
+		}
 		switch {
+		// A closing brace ends the provider block even mid-hashes: an
+		// unterminated `hashes = [` must not swallow the next provider header.
+		case line == "}":
+			locks = append(locks, *cur)
+			cur = nil
+			inHashes = false
 		case strings.HasPrefix(line, "version"):
 			cur.Version = firstQuoted(line)
 		case strings.HasPrefix(line, "hashes"):
@@ -207,10 +258,6 @@ func parseLockfile(content string) []ProviderLock {
 				inHashes = false
 			}
 			cur.Hashes = append(cur.Hashes, allQuoted(line)...)
-		case line == "}":
-			locks = append(locks, *cur)
-			cur = nil
-			inHashes = false
 		}
 	}
 	if cur != nil {
@@ -220,13 +267,23 @@ func parseLockfile(content string) []ProviderLock {
 }
 
 // parseProviderHeader matches lines of the form: provider "<source>" {
+// The opening brace need only appear after the quoted source, not at
+// end-of-line — `provider "x" { # pinned by ops` is valid HCL that terraform
+// honours, and requiring a trailing brace made such a provider invisible.
 func parseProviderHeader(line string) (string, bool) {
-	if !strings.HasPrefix(line, "provider") || !strings.HasSuffix(line, "{") {
+	if !strings.HasPrefix(line, "provider") {
 		return "", false
 	}
 	src := firstQuoted(line)
 	if src == "" {
 		return "", false
+	}
+	// The brace must come after the closing quote of the source, otherwise
+	// this is a reference to a provider rather than a block header.
+	if i := strings.Index(line, src); i >= 0 {
+		if !strings.Contains(line[i+len(src):], "{") {
+			return "", false
+		}
 	}
 	return src, true
 }

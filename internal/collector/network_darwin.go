@@ -42,6 +42,10 @@ type NetworkWatcher struct {
 
 // SetIOCStore attaches an indicator-of-compromise store consulted on every new
 // outbound connection (matched before port heuristics so C2-over-443 is caught).
+//
+// MUST be called before Start. The field is read from the watcher goroutine
+// without synchronisation, so calling it on a running watcher — e.g. from a
+// future config-reload path — is a data race. Rebuild the watcher instead.
 func (nw *NetworkWatcher) SetIOCStore(s *IOCStore) { nw.ioc = s }
 
 func NewNetworkWatcher(interval time.Duration, out chan<- Event, suppress ...*SuppressMatcher) *NetworkWatcher {
@@ -112,9 +116,33 @@ func (nw *NetworkWatcher) scan(emit bool) {
 			nw.seen[c] = struct{}{}
 			if emit {
 				nw.checkConnection(c)
+			} else {
+				// Baseline suppression applies to the noisy port heuristics
+				// only. A known-bad indicator still alerts: a resident C2
+				// session predates the daemon on exactly the hosts that
+				// matter, and must not be silently absorbed into the baseline.
+				nw.checkIOC(c)
 			}
 		}
 	}
+}
+
+// checkIOC emits an alert if the remote IP matches a known-bad indicator.
+// Reports whether a match was found, so the caller can skip the port
+// heuristics. Safe to call on the baseline scan.
+func (nw *NetworkWatcher) checkIOC(c connKey) bool {
+	if c.remotePort == 0 {
+		return false
+	}
+	m, ok := nw.ioc.MatchIP(c.remoteIP)
+	if !ok {
+		return false
+	}
+	e := NewIOCEvent(c.remoteIP, c.remotePort, m)
+	if !nw.suppress.IsSuppressed(e) {
+		nw.out <- e
+	}
+	return true
 }
 
 func (nw *NetworkWatcher) checkConnection(c connKey) {
@@ -128,18 +156,7 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 
 	// IOC match takes precedence — a known-bad IP is flagged regardless of port,
 	// catching C2/exfil over 443 that port heuristics treat as "safe".
-	if m, ok := nw.ioc.MatchIP(c.remoteIP); ok {
-		e := Event{
-			Source:    SourceNetwork,
-			Timestamp: time.Now(),
-			Action:    "connect",
-			Resource:  fmt.Sprintf("%s:%d", c.remoteIP, c.remotePort),
-			Detail:    "outbound connection to known-bad indicator: " + m.Label,
-			Severity:  m.Severity,
-		}
-		if !nw.suppress.IsSuppressed(e) {
-			nw.out <- e
-		}
+	if nw.checkIOC(c) {
 		return
 	}
 

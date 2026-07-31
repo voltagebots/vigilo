@@ -83,6 +83,22 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Collector shutdown. Every producer must be stopped BEFORE close(events),
+	// otherwise an in-flight emit sends on a closed channel and panics the
+	// daemon — which, under Restart=always, is a crash loop that also skips
+	// store.Close() and loses buffered events. stopCollectors is idempotent so
+	// the deferred call is harmless after the explicit one.
+	var stopFns []func()
+	var stopOnce sync.Once
+	stopCollectors := func() {
+		stopOnce.Do(func() {
+			for _, stop := range stopFns {
+				stop()
+			}
+		})
+	}
+	defer stopCollectors()
+
 	// Start collectors
 	fileWatcher, err := collector.NewFileWatcher(cfg.WatchPaths, cfg.ExcludePaths, events, suppress)
 	if err != nil {
@@ -93,12 +109,12 @@ func main() {
 		} else {
 			slog.Info("file watcher started", "paths", cfg.WatchPaths)
 		}
-		defer fileWatcher.Stop()
+		stopFns = append(stopFns, fileWatcher.Stop)
 	}
 
 	procWatcher := collector.NewProcessWatcher(cfg.PollInterval, events, suppress)
 	procWatcher.Start()
-	defer procWatcher.Stop()
+	stopFns = append(stopFns, procWatcher.Stop)
 	slog.Info("process watcher started", "interval", cfg.PollInterval)
 
 	netWatcher := collector.NewNetworkWatcher(cfg.PollInterval, events, suppress)
@@ -107,33 +123,45 @@ func main() {
 		slog.Info("ioc matching enabled", "include_known_c2", cfg.IOC.IncludeKnownC2, "custom_ranges", len(cfg.IOC.IPRanges))
 	}
 	netWatcher.Start()
-	defer netWatcher.Stop()
+	stopFns = append(stopFns, netWatcher.Stop)
 	slog.Info("network watcher started", "interval", cfg.PollInterval)
 
+	var scGuard *collector.SupplyChainGuard
 	if cfg.SupplyChainGuard.Enabled {
 		ecosystems := buildEcosystems(cfg.SupplyChainGuard)
-		if len(ecosystems) == 0 {
+		switch {
+		case len(ecosystems) == 0:
 			slog.Warn("supply-chain guard enabled but no ecosystems configured")
-		} else {
-			roots := cfg.SupplyChainGuard.Roots
-			if len(roots) == 0 {
-				roots = []string{"$HOME"}
-			}
-			scGuard := collector.NewSupplyChainGuard(
-				roots,
+		case len(cfg.SupplyChainGuard.Roots) == 0:
+			// No implicit $HOME default: under the shipped systemd unit the
+			// service account is created with --no-create-home, so $HOME
+			// resolves to a path that does not exist and every scan would
+			// silently inspect zero files.
+			slog.Error("supply-chain guard enabled but no roots configured — set supply_chain_guard.roots; the guard will NOT start")
+		default:
+			scGuard = collector.NewSupplyChainGuard(
+				cfg.SupplyChainGuard.Roots,
 				cfg.SupplyChainGuard.ScanInterval,
 				ecosystems,
 				events,
 				suppress,
 			)
-			scGuard.Start()
-			defer scGuard.Stop()
 			names := make([]string, len(ecosystems))
 			for i, e := range ecosystems {
 				names[i] = e.Name()
 			}
-			slog.Info("supply-chain guard started",
-				"roots", roots, "interval", cfg.SupplyChainGuard.ScanInterval, "ecosystems", names)
+			// Log the roots actually in use, not the configured ones — they
+			// differ exactly when coverage is missing.
+			if len(scGuard.Roots()) == 0 {
+				slog.Error("supply-chain guard has no usable roots — NOT started",
+					"configured", cfg.SupplyChainGuard.Roots)
+				scGuard = nil
+			} else {
+				scGuard.Start()
+				stopFns = append(stopFns, scGuard.Stop)
+				slog.Info("supply-chain guard started",
+					"roots", scGuard.Roots(), "interval", cfg.SupplyChainGuard.ScanInterval, "ecosystems", names)
+			}
 		}
 	}
 
@@ -143,7 +171,7 @@ func main() {
 			slog.Warn("auditd watcher unavailable", "path", cfg.AuditdLogPath, "err", err)
 		} else {
 			slog.Info("auditd watcher started", "path", cfg.AuditdLogPath)
-			defer auditWatcher.Stop()
+			stopFns = append(stopFns, auditWatcher.Stop)
 		}
 	}
 
@@ -225,7 +253,9 @@ func main() {
 		}
 	}
 
-	// Graceful shutdown: close events channel, wait for drain, close store.
+	// Graceful shutdown: stop producers, close events channel, wait for
+	// drain, close store. Order matters — see stopCollectors above.
+	stopCollectors()
 	close(events)
 	drainWg.Wait()
 	if dropped := atomic.LoadUint64(&eventsDropped); dropped > 0 {

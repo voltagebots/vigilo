@@ -157,3 +157,88 @@ func TestTerraformrcMirrorFlagged(t *testing.T) {
 		t.Fatalf("mirror not flagged: %+v", evs)
 	}
 }
+
+// --- Adversarial fixtures ---------------------------------------------------
+//
+// Every fixture above is well-formed HCL written from the same mental model as
+// the parser, which is why a green suite proved nothing about evasion. These
+// cases are all valid HCL that terraform honours, and each one previously made
+// a hostile provider invisible.
+
+const commentAfterBraceLock = `provider "evil-registry.io/bad/aws" { # pinned by ops
+  version = "1.0.0"
+  hashes  = [ "h1:x" ]
+}
+`
+
+const singleLineBlockLock = `provider "evil-registry.io/bad/aws" { version = "1.0.0" }
+`
+
+const unterminatedHashesLock = `provider "registry.terraform.io/hashicorp/aws" {
+  version = "1.0.0"
+  hashes = [
+    "h1:a",
+}
+provider "evil-registry.io/bad/thing" {
+  version = "2.0.0"
+}
+`
+
+func TestTrailingCommentDoesNotHideProvider(t *testing.T) {
+	e := NewTerraformEcosystem(nil, nil)
+	evs := e.Inspect(".terraform.lock.hcl", []byte(commentAfterBraceLock))
+	if len(evs) != 1 || evs[0].Action != "provider_untrusted_source" {
+		t.Fatalf("trailing comment hid the provider: %+v", evs)
+	}
+}
+
+func TestSingleLineBlockDoesNotHideProvider(t *testing.T) {
+	e := NewTerraformEcosystem(nil, nil)
+	evs := e.Inspect(".terraform.lock.hcl", []byte(singleLineBlockLock))
+	if len(evs) != 1 || evs[0].Action != "provider_untrusted_source" {
+		t.Fatalf("single-line block hid the provider: %+v", evs)
+	}
+}
+
+func TestUnterminatedHashesDoesNotSwallowNextProvider(t *testing.T) {
+	locks := parseLockfile(unterminatedHashesLock)
+	var found bool
+	for _, l := range locks {
+		if l.Source == "evil-registry.io/bad/thing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unterminated hashes swallowed the next provider: %+v", locks)
+	}
+}
+
+func TestUnparseableLockfileIsItselfAFinding(t *testing.T) {
+	e := NewTerraformEcosystem(nil, nil)
+	evs := e.Inspect(".terraform.lock.hcl", []byte("this is not hcl at all\n{{{\n"))
+	if len(evs) != 1 || evs[0].Action != "provider_lockfile_unparseable" {
+		t.Fatalf("unparseable lockfile passed as clean: %+v", evs)
+	}
+	if evs[0].Severity != SeverityHigh {
+		t.Errorf("severity = %s, want high", evs[0].Severity)
+	}
+}
+
+func TestEmptyLockfileIsNotAFinding(t *testing.T) {
+	e := NewTerraformEcosystem(nil, nil)
+	if evs := e.Inspect(".terraform.lock.hcl", []byte("\n  \n")); len(evs) != 0 {
+		t.Fatalf("empty lockfile flagged: %+v", evs)
+	}
+}
+
+func TestDevOverridesIsCritical(t *testing.T) {
+	e := NewTerraformEcosystem(nil, nil)
+	rc := "provider_installation {\n  dev_overrides {\n    \"hashicorp/aws\" = \"/tmp/evil\"\n  }\n}"
+	evs := e.Inspect(".terraformrc", []byte(rc))
+	if len(evs) != 1 {
+		t.Fatalf("want 1 event, got %d: %+v", len(evs), evs)
+	}
+	if evs[0].Severity != SeverityCritical {
+		t.Errorf("dev_overrides severity = %s, want critical (it bypasses lockfile checksums)", evs[0].Severity)
+	}
+}

@@ -210,14 +210,39 @@ func scriptRedFlag(cmd string) string {
 	return ""
 }
 
+// nonRegistrySpecPrefixes are dependency-spec forms that resolve somewhere
+// other than the npm registry. npm runs the fetched package's lifecycle
+// scripts either way, so any of these is an arbitrary-code-execution path
+// under the attacker's control.
+var nonRegistrySpecPrefixes = []string{
+	"http://", "https://",
+	"git://", "git+http://", "git+https://", "git+ssh://",
+	"file:", "link:", "portal:",
+	"github:", "gitlab:", "bitbucket:", "gist:",
+}
+
 // isNonRegistrySpec reports whether a dependency version spec points somewhere
-// other than the npm registry (raw http tarball or git-over-http).
+// other than the npm registry. Note npm accepts a tarball URL with any
+// extension, so URL forms are flagged on scheme alone rather than a ".tgz"
+// suffix, and the bare "owner/repo" GitHub shorthand counts too.
 func isNonRegistrySpec(spec string) bool {
 	s := strings.ToLower(strings.TrimSpace(spec))
-	return strings.HasPrefix(s, "http://") ||
-		strings.Contains(s, "git+http://") ||
-		strings.HasPrefix(s, "git://") ||
-		(strings.HasPrefix(s, "https://") && strings.HasSuffix(s, ".tgz"))
+	if s == "" {
+		return false
+	}
+	for _, p := range nonRegistrySpecPrefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	// Bare GitHub shorthand: "owner/repo" or "owner/repo#ref". Excludes scoped
+	// package names ("@scope/pkg") and anything carrying semver range syntax,
+	// which are ordinary registry specs.
+	if strings.Contains(s, "/") && !strings.HasPrefix(s, "@") &&
+		strings.IndexAny(s, "^~<>=* ") == -1 {
+		return true
+	}
+	return false
 }
 
 func hostOf(rawurl string) string {

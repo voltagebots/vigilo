@@ -97,7 +97,10 @@ Every ecosystem must satisfy (enforced by `runEcosystemConformance`):
 ```yaml
 supply_chain_guard:
   enabled: true
-  roots: ["$HOME/code"]      # defaults to $HOME
+  roots: ["$HOME/code"]      # REQUIRED when enabled — no default.
+                             # Only $VAR is expanded, not `~`.
+                             # Roots that don't exist are dropped with an
+                             # ERROR; if none survive, the guard won't start.
   scan_interval: 5m
   terraform:
     enabled: true
@@ -144,8 +147,34 @@ process-name indicators via the same `IOCStore`.
 | terraform | `provider_typosquat` (near-miss of trusted namespace) | critical |
 | terraform | `provider_untrusted_source` (non-allowlisted registry/namespace) | high |
 | terraform | `provider_hash_mismatch` (lockfile hashes miss pinned set) | critical |
+| terraform | `provider_mirror_config` (`dev_overrides` in `.terraformrc` — bypasses registry *and* lockfile checksums) | critical |
 | terraform | `provider_mirror_config` (`network_mirror`/`filesystem_mirror` in `.terraformrc`) | high |
+| terraform | `provider_lockfile_unparseable` (non-empty lockfile yielding no provider blocks — malformed or evasion) | high |
 | npm | `npm_install_script` (payload-fetching lifecycle hook) | critical |
-| npm | `npm_nonregistry_dependency` (http tarball / git+http dep) | high |
+| npm | `npm_nonregistry_dependency` (any non-registry spec: URL, `git+*`, `file:`, `github:`/`owner/repo` shorthand) | high |
 | npm | `npm_untrusted_registry` (lockfile `resolved` off-allowlist) | high |
 | npm | `npm_registry_override` (`.npmrc` registry to non-allowlisted host) | high |
+
+## Coverage boundaries
+
+What the guard does **not** see, stated explicitly so the coverage claims above
+aren't read as broader than they are:
+
+- **Detection is post-fetch for the lockfile paths.** `.terraform.lock.hcl` is
+  written by `terraform init` — the same command that already executed the
+  provider. A finding there tells you that you were compromised, not that you
+  are about to be. The pre-execution signals are `.terraformrc`
+  (`dev_overrides`/mirrors) and the npm manifest checks.
+- **`node_modules` is scanned one level deep only.** Installed direct
+  dependencies (`node_modules/<pkg>/package.json` and
+  `node_modules/@scope/<pkg>/package.json`) are inspected, since that is where
+  a BeaverTail-style lifecycle payload actually lives. Transitive dependencies
+  nested deeper are not walked — that is a deliberate cost trade-off, not an
+  oversight.
+- **Manifests over 5 MiB are skipped**, not truncated. A partial parse would
+  produce findings that don't match what the package manager will do.
+- **`TF_CLI_CONFIG_FILE` is read from vigilo's own environment**, not from the
+  developer's shell. A per-shell override pointing at a hostile CLI config is
+  invisible to the daemon; only the on-disk paths inside `roots` are covered.
+- **Findings dedupe for 24h.** A re-planted identical payload re-alerts after
+  that window, not before.

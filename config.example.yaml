@@ -101,3 +101,50 @@ suppress_rules:
   - match: /etc/vigilo/
     source: file_access
     reason: "vigilo reads its own config on reload"
+
+# ── Supply-chain guard ────────────────────────────────────────────────────────
+# Scans dependency manifests, lockfiles, and package-manager CLI config for the
+# tampering that precedes a compromise: trojaned terraform providers, malicious
+# npm lifecycle scripts, registry/mirror substitution.
+#
+# `roots` is REQUIRED when enabled — there is no implicit default. The service
+# account is created with --no-create-home, so $HOME does not resolve and a
+# defaulted root would silently scan nothing. Point this at the directories
+# where source checkouts actually live, and make sure they are readable under
+# the unit's ProtectSystem=strict / ReadOnlyPaths settings.
+#
+# supply_chain_guard:
+#   enabled: true
+#   scan_interval: 15m
+#   roots:
+#     - /home/dev/src        # only $VAR is expanded, not `~`
+#     - /opt/checkouts
+#   terraform:
+#     # Provider source prefixes you trust. Defaults to official HashiCorp only;
+#     # add your own org namespace here or every internal provider alerts.
+#     allowed_provider_prefixes:
+#       - registry.terraform.io/hashicorp/
+#       - registry.terraform.io/yourorg/
+#   npm:
+#     # Registries you trust. Defaults to registry.npmjs.org only; add your
+#     # internal registry here or every internal package alerts.
+#     allowed_registries:
+#       - registry.npmjs.org
+#       - npm.internal.yourcompany.com
+
+# ── Indicators of compromise ──────────────────────────────────────────────────
+# Consulted on every new outbound connection BEFORE the port heuristics, so
+# C2/exfil over :443 — which port rules treat as safe — is still caught.
+#
+# include_known_c2 ships OFF deliberately. The built-in set includes Telegram
+# ranges (the 2026-07 DPRK infostealer used the Telegram Bot-API for C2), and
+# vigilo's own Telegram alerter uses those same ranges — enabling it on a host
+# that alerts via Telegram makes vigilo alert on itself. Turn it on for hosts
+# where such egress is anomalous, e.g. prod validators.
+#
+# ioc:
+#   include_known_c2: true
+#   ip_ranges:
+#     - cidr: 203.0.113.0/24
+#       label: "known-bad range from incident 2026-07"
+#       severity: critical

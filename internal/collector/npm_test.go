@@ -77,3 +77,43 @@ func TestNpmConformance(t *testing.T) {
 		},
 	})
 }
+
+// --- Adversarial dependency specs -------------------------------------------
+//
+// npm runs the fetched package's lifecycle scripts regardless of where the
+// spec resolves from, so each of these is an arbitrary-code-execution path.
+// The github:/bare-shorthand forms are how a DPRK-style package gets pulled
+// from an attacker-controlled repo.
+
+func TestNonRegistrySpecsAreFlagged(t *testing.T) {
+	hostile := []string{
+		"git+https://evil.example/p.git",
+		"git+ssh://git@evil.example/p.git",
+		"github:attacker/payload",
+		"gitlab:attacker/payload",
+		"attacker/payload",
+		"attacker/payload#v1.2.3",
+		"https://evil.example/payload",
+		"https://evil.example/p.tgz",
+		"http://evil.example/p.tgz",
+		"file:../payload",
+		"git://evil.example/p.git",
+	}
+	for _, spec := range hostile {
+		if !isNonRegistrySpec(spec) {
+			t.Errorf("hostile spec passed as registry-clean: %q", spec)
+		}
+	}
+}
+
+func TestRegistrySpecsAreNotFlagged(t *testing.T) {
+	clean := []string{
+		"^1.2.3", "~1.2.3", "1.2.3", ">=1.0.0 <2.0.0", "*", "latest",
+		"@scope/pkg", "workspace:*",
+	}
+	for _, spec := range clean {
+		if isNonRegistrySpec(spec) {
+			t.Errorf("ordinary registry spec false-positived: %q", spec)
+		}
+	}
+}

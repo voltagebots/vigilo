@@ -1,8 +1,10 @@
 package collector
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
+	"time"
 )
 
 // IOCStore is a shared indicator-of-compromise lookup consulted by collectors
@@ -89,6 +91,19 @@ func (s *IOCStore) MatchIP(ipStr string) (IOCMatch, bool) {
 
 // Empty reports whether the store has no indicators (used to skip wiring).
 func (s *IOCStore) Empty() bool { return s == nil || len(s.ipRanges) == 0 }
+
+// NewIOCEvent builds the event for a matched indicator. Shared by the darwin
+// and linux network watchers so the two platforms cannot drift.
+func NewIOCEvent(remoteIP string, remotePort int, m IOCMatch) Event {
+	return Event{
+		Source:    SourceNetwork,
+		Timestamp: time.Now(),
+		Action:    "connect",
+		Resource:  fmt.Sprintf("%s:%d", remoteIP, remotePort),
+		Detail:    "outbound connection to known-bad indicator: " + m.Label,
+		Severity:  m.Severity,
+	}
+}
 
 func validSeverityValue(s Severity) bool {
 	switch s {
