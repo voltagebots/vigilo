@@ -212,7 +212,11 @@ func (aw *AuditdWatcher) emitGroup(g *auditGroup) {
 			Severity:  sev,
 		}
 		if !aw.suppress.IsSuppressed(e) {
-			aw.out <- e
+			select {
+			case aw.out <- e:
+			case <-aw.stop:
+				return
+			}
 		}
 	}
 }

@@ -242,3 +242,63 @@ func TestDevOverridesIsCritical(t *testing.T) {
 		t.Errorf("dev_overrides severity = %s, want critical (it bypasses lockfile checksums)", evs[0].Severity)
 	}
 }
+
+// --- Cycle-2 fixes ----------------------------------------------------------
+
+// A `}` inside a trailing comment must not close the block: doing so left
+// Version and Hashes empty, which silently skipped the hash-pin check — the
+// one control that catches a mirror swap under a trusted provider name.
+func TestBraceInCommentDoesNotCloseBlock(t *testing.T) {
+	src := "provider \"registry.terraform.io/hashicorp/aws\" { # } see runbook\n" +
+		"  version = \"5.31.0\"\n  hashes = [\"h1:evilhash\"]\n}\n"
+	locks := parseLockfile(src)
+	if len(locks) != 1 {
+		t.Fatalf("want 1 provider, got %d: %+v", len(locks), locks)
+	}
+	if locks[0].Version != "5.31.0" || len(locks[0].Hashes) != 1 {
+		t.Fatalf("version/hashes discarded by comment brace: %+v", locks[0])
+	}
+	pinned := map[string][]string{"registry.terraform.io/hashicorp/aws@5.31.0": {"h1:realhash"}}
+	evs := NewTerraformEcosystem(nil, pinned).Inspect(".terraform.lock.hcl", []byte(src))
+	if len(evs) != 1 || evs[0].Action != "provider_hash_mismatch" {
+		t.Fatalf("hash-pin check was skipped: %+v", evs)
+	}
+}
+
+// Terraform's auto-generated header is two comment lines. A lockfile carrying
+// only that header is legitimate — a HIGH finding on it would train operators
+// to ignore the signal.
+func TestHeaderOnlyLockfileIsNotAFinding(t *testing.T) {
+	hdr := "# This file is maintained automatically by \"terraform init\".\n" +
+		"# Manual edits may be lost in future updates.\n"
+	if evs := NewTerraformEcosystem(nil, nil).Inspect(".terraform.lock.hcl", []byte(hdr)); len(evs) != 0 {
+		t.Fatalf("header-only lockfile flagged: %+v", evs)
+	}
+}
+
+// Hash values are base64-ish and legitimately contain `/`, so comment
+// stripping must be quote-aware or it truncates them.
+func TestCommentStripPreservesSlashesInHashes(t *testing.T) {
+	src := "provider \"registry.terraform.io/hashicorp/aws\" {\n" +
+		"  version = \"1.0.0\"\n  hashes = [\"zh:aa//bb\"]\n}\n"
+	locks := parseLockfile(src)
+	if len(locks) != 1 || len(locks[0].Hashes) != 1 || locks[0].Hashes[0] != "zh:aa//bb" {
+		t.Fatalf("hash truncated by comment stripping: %+v", locks)
+	}
+}
+
+func TestStripComment(t *testing.T) {
+	cases := map[string]string{
+		`  version = "1.0"  # trailing`:  `version = "1.0"`,
+		`  version = "1.0" // trailing`:  `version = "1.0"`,
+		`# whole line`:                   ``,
+		`"zh:aa//bb",`:                   `"zh:aa//bb",`,
+		`"has # hash",`:                  `"has # hash",`,
+		`provider "x" { # }`:             `provider "x" {`,
+	}
+	for in, want := range cases {
+		if got := stripComment(in); got != want {
+			t.Errorf("stripComment(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

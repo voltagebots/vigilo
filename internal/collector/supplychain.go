@@ -137,7 +137,7 @@ func (g *SupplyChainGuard) loop() {
 
 func (g *SupplyChainGuard) scan() {
 	g.pruneSeen()
-	inspected := 0
+	visited, inspected := 0, 0
 	for _, root := range g.roots {
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if g.stopping() {
@@ -155,11 +155,14 @@ func (g *SupplyChainGuard) scan() {
 					// installed direct dependencies: in a BeaverTail-style npm
 					// compromise the malicious lifecycle script lives in a
 					// dependency's manifest, not the victim's own.
-					inspected += g.scanInstalledPackages(path)
+					v, i := g.scanInstalledPackages(path)
+					visited += v
+					inspected += i
 					return filepath.SkipDir
 				}
 				return nil
 			}
+			visited++
 			if g.inspectFile(path, d.Name()) {
 				inspected++
 			}
@@ -177,28 +180,45 @@ func (g *SupplyChainGuard) scan() {
 			if err != nil {
 				continue
 			}
+			visited++
 			inspected++
 			for _, ev := range e.Inspect(p, content) {
 				g.emit(ev)
 			}
 		}
 	}
-	if inspected == 0 {
-		slog.Error("supply-chain guard scan inspected 0 files — check roots", "roots", g.roots)
+	// Distinguish "the roots are broken, you have no coverage" from "the roots
+	// are fine, this codebase just has no manifests". Conflating them ERRORs
+	// forever on a Go-only checkout, which trains operators to ignore the very
+	// signal that exists to surface missing coverage.
+	switch {
+	case visited == 0:
+		slog.Error("supply-chain guard scan reached no files — roots unreadable, NO COVERAGE",
+			"roots", g.roots)
+	case inspected == 0:
+		slog.Info("supply-chain guard scan found no manifests",
+			"roots", g.roots, "files_visited", visited)
+	default:
+		slog.Debug("supply-chain guard scan complete",
+			"roots", g.roots, "files_visited", visited, "inspected", inspected)
 	}
 }
 
 // scanInstalledPackages inspects the manifests of installed direct dependencies
 // (node_modules/<pkg>/ and node_modules/@scope/<pkg>/) without descending into
 // their own nested node_modules. Bounded by design: one level of packages.
-func (g *SupplyChainGuard) scanInstalledPackages(nodeModules string) int {
-	inspected := 0
+// Returns (visited, inspected).
+func (g *SupplyChainGuard) scanInstalledPackages(nodeModules string) (int, int) {
+	visited, inspected := 0, 0
 	entries, err := os.ReadDir(nodeModules)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || g.stopping() {
+		if g.stopping() {
+			return visited, inspected
+		}
+		if !entry.IsDir() {
 			continue
 		}
 		dirs := []string{filepath.Join(nodeModules, entry.Name())}
@@ -217,12 +237,13 @@ func (g *SupplyChainGuard) scanInstalledPackages(nodeModules string) int {
 		}
 		for _, dir := range dirs {
 			manifest := filepath.Join(dir, "package.json")
+			visited++
 			if g.inspectFile(manifest, "package.json") {
 				inspected++
 			}
 		}
 	}
-	return inspected
+	return visited, inspected
 }
 
 // inspectFile routes one file to every ecosystem that claims it, reading the
@@ -258,12 +279,19 @@ func readCapped(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err == nil && fi.Size() > maxManifestBytes {
+	// Read one byte past the cap so an oversized file is detected from the read
+	// itself. Relying on Stat alone silently truncated when Stat failed — the
+	// exact outcome this function exists to avoid.
+	b, err := io.ReadAll(io.LimitReader(f, maxManifestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxManifestBytes {
 		slog.Warn("supply-chain guard: skipping oversized manifest",
-			"path", path, "size", fi.Size(), "cap", maxManifestBytes)
+			"path", path, "cap", maxManifestBytes)
 		return nil, fs.ErrInvalid
 	}
-	return io.ReadAll(io.LimitReader(f, maxManifestBytes))
+	return b, nil
 }
 
 // pruneSeen drops dedup entries past findingTTL so a re-planted payload alerts

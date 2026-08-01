@@ -110,3 +110,25 @@ func TestCheckIOCIgnoresCleanRemote(t *testing.T) {
 		t.Fatal("clean remote produced an event")
 	}
 }
+
+// Cycle-2: Stop() returns without waiting for the watcher goroutine, so a send
+// already in flight must be cancellable — otherwise main's close(events) races
+// it and panics the daemon under Restart=always.
+func TestWatcherEmitUnblocksOnStop(t *testing.T) {
+	out := make(chan Event) // unbuffered, no consumer
+	nw := NewNetworkWatcher(time.Minute, out)
+	nw.SetIOCStore(NewIOCStore(KnownC2IPRanges))
+	c := connKey{remoteIP: "149.154.166.110", remotePort: 443}
+
+	done := make(chan struct{})
+	go func() {
+		nw.checkIOC(c)
+		close(done)
+	}()
+	nw.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher emit did not unblock after Stop — close(events) would race it")
+	}
+}

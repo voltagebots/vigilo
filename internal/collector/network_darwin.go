@@ -140,7 +140,12 @@ func (nw *NetworkWatcher) checkIOC(c connKey) bool {
 	}
 	e := NewIOCEvent(c.remoteIP, c.remotePort, m)
 	if !nw.suppress.IsSuppressed(e) {
-		nw.out <- e
+		// Cancellable: main closes the event bus after Stop; a send already in
+		// flight would otherwise panic on the closed channel.
+		select {
+		case nw.out <- e:
+		case <-nw.stop:
+		}
 	}
 	return true
 }
@@ -181,7 +186,12 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 		Severity:  sev,
 	}
 	if !nw.suppress.IsSuppressed(e) {
-		nw.out <- e
+		// Cancellable: main closes the event bus after Stop; a send already in
+		// flight would otherwise panic on the closed channel.
+		select {
+		case nw.out <- e:
+		case <-nw.stop:
+		}
 	}
 }
 

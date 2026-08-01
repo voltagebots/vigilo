@@ -193,3 +193,44 @@ func TestExpandPathForms(t *testing.T) {
 		}
 	}
 }
+
+// readCapped must skip an oversized file even when Stat is unavailable —
+// relying on Stat alone silently truncated, the outcome it exists to avoid.
+func TestReadCappedDetectsOversizeFromReadNotStat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(path, make([]byte, maxManifestBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCapped(path); err == nil {
+		t.Fatal("oversized manifest read instead of skipped")
+	}
+	// Exactly at the cap is still fine.
+	if err := os.WriteFile(path, make([]byte, maxManifestBytes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCapped(path); err != nil {
+		t.Fatalf("at-cap manifest rejected: %v", err)
+	}
+}
+
+// scanInstalledPackages must bail on Stop, not keep iterating the directory.
+func TestScanInstalledPackagesBailsOnStop(t *testing.T) {
+	root := t.TempDir()
+	nm := filepath.Join(root, "node_modules")
+	for _, p := range []string{"a", "b", "c"} {
+		d := filepath.Join(nm, p)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "package.json"), []byte(evilPackageJSON), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := newTestGuard(t, []string{root}, make(chan Event, 16))
+	g.Stop()
+	visited, _ := g.scanInstalledPackages(nm)
+	if visited != 0 {
+		t.Fatalf("kept scanning after Stop: visited=%d", visited)
+	}
+}

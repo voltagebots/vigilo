@@ -117,3 +117,16 @@ func TestRegistrySpecsAreNotFlagged(t *testing.T) {
 		}
 	}
 }
+
+// npm alias specs resolve from the registry despite containing a slash;
+// flagging `npm:@scope/pkg@1.0.0` HIGH is wrong on the merits, not just noisy.
+func TestRegistryAliasSpecsAreNotFlagged(t *testing.T) {
+	for _, spec := range []string{
+		"npm:@bar/baz@1.0.0", "jsr:@std/path", "npm:string-width@4.2.0",
+		"workspace:^", "workspace:*", "catalog:default",
+	} {
+		if isNonRegistrySpec(spec) {
+			t.Errorf("registry alias false-positived: %q", spec)
+		}
+	}
+}

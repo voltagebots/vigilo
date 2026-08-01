@@ -55,7 +55,7 @@ func (t *TerraformEcosystem) Inspect(path string, content []byte) []Event {
 		// was defeated — by malformed HCL, an unhandled form, or deliberate
 		// evasion. Silence there is indistinguishable from "clean", so treat
 		// the parse failure itself as the finding.
-		if len(locks) == 0 && strings.TrimSpace(string(content)) != "" {
+		if len(locks) == 0 && hasNonCommentContent(string(content)) {
 			return []Event{{
 				Source:    SourceSupplyChain,
 				Timestamp: time.Now(),
@@ -218,8 +218,11 @@ func parseLockfile(content string) []ProviderLock {
 	var cur *ProviderLock
 	inHashes := false
 	for _, raw := range strings.Split(content, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+		// Strip comments BEFORE any structural decision. A `}` inside a trailing
+		// comment must not be read as a block close — that silently discarded the
+		// provider's version and hashes, which skipped the hash-pin check.
+		line := stripComment(raw)
+		if line == "" {
 			continue
 		}
 		// A provider header always starts a new block, even if the previous one
@@ -264,6 +267,45 @@ func parseLockfile(content string) []ProviderLock {
 		locks = append(locks, *cur)
 	}
 	return locks
+}
+
+// stripComment removes a trailing `#` or `//` comment and surrounding space.
+// Quote-aware: hash values are base64-ish and legitimately contain `/`, so a
+// naive split would truncate a hash like "zh:aa//bb" into a wrong value.
+func stripComment(line string) string {
+	inQuote := false
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '\\':
+			if inQuote {
+				i++ // skip the escaped character
+			}
+		case '"':
+			inQuote = !inQuote
+		case '#':
+			if !inQuote {
+				return strings.TrimSpace(line[:i])
+			}
+		case '/':
+			if !inQuote && i+1 < len(line) && line[i+1] == '/' {
+				return strings.TrimSpace(line[:i])
+			}
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// hasNonCommentContent reports whether content holds anything but comments and
+// whitespace. Terraform's auto-generated lockfile header is two comment lines,
+// and a lockfile carrying only that header is legitimate (all providers removed
+// from the config) — it must not be reported as unparseable.
+func hasNonCommentContent(content string) bool {
+	for _, raw := range strings.Split(content, "\n") {
+		if stripComment(raw) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseProviderHeader matches lines of the form: provider "<source>" {

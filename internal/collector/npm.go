@@ -214,6 +214,10 @@ func scriptRedFlag(cmd string) string {
 // other than the npm registry. npm runs the fetched package's lifecycle
 // scripts either way, so any of these is an arbitrary-code-execution path
 // under the attacker's control.
+// registryAliasPrefixes still resolve from the registry (or the workspace), so
+// they are checked before the non-registry forms and the bare-shorthand rule.
+var registryAliasPrefixes = []string{"npm:", "workspace:", "catalog:", "jsr:"}
+
 var nonRegistrySpecPrefixes = []string{
 	"http://", "https://",
 	"git://", "git+http://", "git+https://", "git+ssh://",
@@ -229,6 +233,15 @@ func isNonRegistrySpec(spec string) bool {
 	s := strings.ToLower(strings.TrimSpace(spec))
 	if s == "" {
 		return false
+	}
+	// Alias and protocol forms that still resolve from the registry or the
+	// workspace. `npm:@scope/pkg@1.0.0` is an ordinary registry install under
+	// an alias — common in monorepos — and must not trip the shorthand
+	// heuristic below just because it contains a slash.
+	for _, p := range registryAliasPrefixes {
+		if strings.HasPrefix(s, p) {
+			return false
+		}
 	}
 	for _, p := range nonRegistrySpecPrefixes {
 		if strings.HasPrefix(s, p) {
