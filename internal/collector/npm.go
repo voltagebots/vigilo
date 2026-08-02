@@ -88,7 +88,7 @@ func (n *NpmEcosystem) inspectPackageJSON(file string, content []byte) []Event {
 				Source:    SourceSupplyChain,
 				Timestamp: time.Now(),
 				Action:    "npm_install_script",
-				Resource:  hook,
+				Resource:  file,
 				Detail:    "npm lifecycle script '" + hook + "' fetches/executes a payload (matched '" + tok + "'): " + cmd + " (in " + file + ")",
 				Severity:  SeverityCritical,
 			})
