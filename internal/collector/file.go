@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -48,6 +49,8 @@ type FileWatcher struct {
 	suppress *SuppressMatcher
 	out      chan<- Event
 	watcher  *fsnotify.Watcher
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*SuppressMatcher) (*FileWatcher, error) {
@@ -59,12 +62,15 @@ func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*Supp
 	if len(suppress) > 0 {
 		sm = suppress[0]
 	}
-	return &FileWatcher{paths: paths, exclude: exclude, suppress: sm, out: out, watcher: w}, nil
+	return &FileWatcher{
+		paths: paths, exclude: exclude, suppress: sm, out: out, watcher: w,
+		stop: make(chan struct{}),
+	}, nil
 }
 
 func (fw *FileWatcher) Start() error {
 	for _, p := range fw.paths {
-		expanded := os.ExpandEnv(p)
+		expanded := expandPath(p)
 		if err := fw.addRecursive(expanded); err != nil {
 			slog.Warn("file watcher: cannot watch path", "path", expanded, "err", err)
 		}
@@ -75,7 +81,10 @@ func (fw *FileWatcher) Start() error {
 }
 
 func (fw *FileWatcher) Stop() {
-	fw.watcher.Close()
+	fw.stopOnce.Do(func() {
+		close(fw.stop)
+		fw.watcher.Close()
+	})
 }
 
 func (fw *FileWatcher) addRecursive(root string) error {
@@ -95,7 +104,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 
 func (fw *FileWatcher) isExcluded(path string) bool {
 	for _, ex := range fw.exclude {
-		if strings.HasPrefix(path, os.ExpandEnv(ex)) {
+		if strings.HasPrefix(path, expandPath(ex)) {
 			return true
 		}
 	}
@@ -124,7 +133,13 @@ func (fw *FileWatcher) loop() {
 					Severity:  sev,
 				}
 				if !fw.suppress.IsSuppressed(e) {
-					fw.out <- e
+					// Cancellable: main closes the event bus after Stop, and a
+					// send already in flight would otherwise panic on it.
+					select {
+					case fw.out <- e:
+					case <-fw.stop:
+						return
+					}
 				}
 			}
 			// New subdirectory created — start watching it

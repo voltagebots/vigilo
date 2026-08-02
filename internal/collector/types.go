@@ -8,10 +8,11 @@ import "time"
 type EventSource string
 
 const (
-	SourceFile    EventSource = "file_access"
-	SourceProcess EventSource = "process"
-	SourceNetwork EventSource = "network"
-	SourceAuth    EventSource = "auth"
+	SourceFile        EventSource = "file_access"
+	SourceProcess     EventSource = "process"
+	SourceNetwork     EventSource = "network"
+	SourceAuth        EventSource = "auth"
+	SourceSupplyChain EventSource = "supply_chain"
 )
 
 type Severity string

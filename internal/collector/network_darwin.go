@@ -34,10 +34,19 @@ type connKey struct {
 type NetworkWatcher struct {
 	interval time.Duration
 	suppress *SuppressMatcher
+	ioc      *IOCStore
 	out      chan<- Event
 	seen     map[connKey]struct{}
 	stop     chan struct{}
 }
+
+// SetIOCStore attaches an indicator-of-compromise store consulted on every new
+// outbound connection (matched before port heuristics so C2-over-443 is caught).
+//
+// MUST be called before Start. The field is read from the watcher goroutine
+// without synchronisation, so calling it on a running watcher — e.g. from a
+// future config-reload path — is a data race. Rebuild the watcher instead.
+func (nw *NetworkWatcher) SetIOCStore(s *IOCStore) { nw.ioc = s }
 
 func NewNetworkWatcher(interval time.Duration, out chan<- Event, suppress ...*SuppressMatcher) *NetworkWatcher {
 	var sm *SuppressMatcher
@@ -107,9 +116,38 @@ func (nw *NetworkWatcher) scan(emit bool) {
 			nw.seen[c] = struct{}{}
 			if emit {
 				nw.checkConnection(c)
+			} else {
+				// Baseline suppression applies to the noisy port heuristics
+				// only. A known-bad indicator still alerts: a resident C2
+				// session predates the daemon on exactly the hosts that
+				// matter, and must not be silently absorbed into the baseline.
+				nw.checkIOC(c)
 			}
 		}
 	}
+}
+
+// checkIOC emits an alert if the remote IP matches a known-bad indicator.
+// Reports whether a match was found, so the caller can skip the port
+// heuristics. Safe to call on the baseline scan.
+func (nw *NetworkWatcher) checkIOC(c connKey) bool {
+	if c.remotePort == 0 {
+		return false
+	}
+	m, ok := nw.ioc.MatchIP(c.remoteIP)
+	if !ok {
+		return false
+	}
+	e := NewIOCEvent(c.remoteIP, c.remotePort, m)
+	if !nw.suppress.IsSuppressed(e) {
+		// Cancellable: main closes the event bus after Stop; a send already in
+		// flight would otherwise panic on the closed channel.
+		select {
+		case nw.out <- e:
+		case <-nw.stop:
+		}
+	}
+	return true
 }
 
 func (nw *NetworkWatcher) checkConnection(c connKey) {
@@ -118,6 +156,12 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 	}
 	remoteIP := net.ParseIP(c.remoteIP)
 	if remoteIP == nil || remoteIP.IsLoopback() {
+		return
+	}
+
+	// IOC match takes precedence — a known-bad IP is flagged regardless of port,
+	// catching C2/exfil over 443 that port heuristics treat as "safe".
+	if nw.checkIOC(c) {
 		return
 	}
 
@@ -142,7 +186,12 @@ func (nw *NetworkWatcher) checkConnection(c connKey) {
 		Severity:  sev,
 	}
 	if !nw.suppress.IsSuppressed(e) {
-		nw.out <- e
+		// Cancellable: main closes the event bus after Stop; a send already in
+		// flight would otherwise panic on the closed channel.
+		select {
+		case nw.out <- e:
+		case <-nw.stop:
+		}
 	}
 }
 

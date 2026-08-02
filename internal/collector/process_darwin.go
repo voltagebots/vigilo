@@ -124,7 +124,11 @@ func (pw *ProcessWatcher) checkProcess(p procInfo) {
 				Severity:  sev,
 			}
 			if !pw.suppress.IsSuppressed(e) {
-				pw.out <- e
+				select {
+				case pw.out <- e:
+				case <-pw.stop:
+					return
+				}
 			}
 			return
 		}
