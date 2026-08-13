@@ -2,4 +2,8 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY harness/webhook_listener.py .
 EXPOSE 8090
-CMD ["python3", "-c", "from webhook_listener import WebhookListener; import time; l = WebhookListener(port=8090); l.start(); time.sleep(1e9)"]
+EXPOSE 4444
+EXPOSE 4445
+EXPOSE 1337
+EXPOSE 31337
+CMD ["python3", "-c", "from webhook_listener import WebhookListener, DecoyListener; import time; w = WebhookListener(port=8090); w.start(); decoys = [DecoyListener(port=p) for p in (4444, 4445, 1337, 31337)]; [d.start() for d in decoys]; time.sleep(1e9)"]

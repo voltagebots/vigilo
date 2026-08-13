@@ -12,6 +12,7 @@ latency claim (Step 0.5 H3)."""
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -60,9 +61,7 @@ class WebhookListener:
                     self.end_headers()
                     return
                 with listener._lock:
-                    body = json.dumps(
-                        [{"t1": a.t1, "payload": a.payload} for a in listener._alerts]
-                    ).encode("utf-8")
+                    body = json.dumps([{"t1": a.t1, "payload": a.payload} for a in listener._alerts]).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -85,3 +84,53 @@ class WebhookListener:
             self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+
+
+class DecoyListener:
+    """Accepts real connections on an actual suspiciousPorts entry
+    (internal/collector/network_linux.go: 4444/4445/1337/31337) so
+    trigger_suspicious_outbound has something to connect to that stays
+    ESTABLISHED long enough for the daemon's poller to observe it. A bare
+    connection attempt to a port nothing listens on RSTs before the next
+    poll tick -- doesn't need to serve anything, just accept() and hold."""
+
+    def __init__(self, host: str = "0.0.0.0", port: int = 4444) -> None:
+        self._host = host
+        self._port = port
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._sock: socket.socket | None = None
+
+    def _serve(self) -> None:
+        assert self._sock is not None
+        self._sock.settimeout(0.5)
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._sock.accept()
+            except TimeoutError:
+                continue
+            threading.Thread(target=self._hold, args=(conn,), daemon=True).start()
+
+    def _hold(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(5.0)
+            conn.recv(1)  # blocks until the client closes or the timeout fires
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def start(self) -> None:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((self._host, self._port))
+        self._sock.listen(5)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if self._sock is not None:
+            self._sock.close()

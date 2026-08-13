@@ -71,31 +71,44 @@ def trigger_env_write(container: str, repeat_index: int) -> TriggerResult:
     return TriggerResult(chain_name="env_write", t0=t0, mechanism="fsnotify")
 
 
-def trigger_suspicious_outbound(container: str, listener_host: str, port: int) -> TriggerResult:
+# Real entries from internal/collector/network_linux.go's suspiciousPorts --
+# these score SeverityCritical, unlike an arbitrary port (verified live:
+# port 8090 classified as SeverityMedium, "non-standard port", below
+# min_severity=high and never fired). DecoyListener (webhook_listener.py)
+# accepts on all four inside the eval network so the connection stays
+# ESTABLISHED long enough for the poller to observe it.
+_SUSPICIOUS_PORTS = (4444, 4445, 1337, 31337)
+
+
+def trigger_suspicious_outbound(container: str, listener_host: str, repeat_index: int) -> TriggerResult:
     """Network chain is poll-based (/proc/net/tcp) -- holds the connection
     open for the configured poll_interval so a scan between polls can't miss
-    it entirely, and varies the destination PORT per repeat so each is a
-    distinct resource surviving signal_dedup (Step 0.5 H1).
+    it entirely. Cycles through the real suspiciousPorts entries per repeat
+    (both for genuine severity=critical classification, and so each repeat
+    is a distinct resource surviving signal_dedup, Step 0.5 H1).
 
-    NOT YET VERIFIED LIVE (known gap, next concrete task): live testing found
-    network_linux.go classifies an unrecognized port as SeverityMedium
-    ("non-standard port"), below min_severity=high -- config.eval.yaml's
-    port 8090 target never fires. The actual suspiciousPorts set
-    (4444/4445/1337/31337, real reverse-shell/C2 ports) IS SeverityCritical
-    and would pass the filter, but nothing listens there today to keep the
-    connection ESTABLISHED long enough for the poller to observe it (a bare
-    RST'd connection attempt doesn't linger in /proc/net/tcp). Needs a decoy
-    accept-only listener on one of those ports before this chain is real."""
+    CORRECTED (live verification): the daemon's own image is Alpine-based
+    with no python3 -- every attempt using a python3 -c connect snippet
+    silently failed. Compounded by a second real bug: the original call
+    backgrounded the command with `&`, so _docker_exec's exit-code check
+    could never have caught that failure anyway -- `sh -c "... &"` reports
+    success the instant the background job launches, regardless of what it
+    does. Fixed by running the connection attempt in the FOREGROUND with a
+    bounded duration (matches _docker_exec's existing timeout), so a real
+    failure actually surfaces as a real exception. Uses busybox nc
+    (confirmed present, python3 isn't). A bare `nc host port` closes almost
+    immediately (observed live: /proc/net/tcp state 06 TIME_WAIT within
+    ~0.5s) -- piping a sleep as nc's stdin holds the connection open in
+    state 01 ESTABLISHED for the sleep's duration without sending or
+    expecting any data."""
     _assert_daemon_container(container)
+    port = _SUSPICIOUS_PORTS[repeat_index % len(_SUSPICIOUS_PORTS)]
     t0 = time.time()
-    # sleep 2 keeps the socket open across a >=1s poll_interval; background
-    # so this call returns promptly and t0 stays tight to the connect attempt
-    connect_snippet = f"import socket,time; s=socket.socket(); s.connect(('{listener_host}', {port})); time.sleep(2)"
-    _docker_exec(container, "sh", "-c", f'python3 -c "{connect_snippet}" &')
+    _docker_exec(container, "sh", "-c", f"sleep 3 | nc {listener_host} {port}")
     return TriggerResult(chain_name="suspicious_outbound", t0=t0, mechanism="poll")
 
 
-def run_all_chains(container: str, n_repeats: int, listener_host: str, base_port: int) -> list[TriggerResult]:
+def run_all_chains(container: str, n_repeats: int, listener_host: str) -> list[TriggerResult]:
     """Real gap found live: signal_dedup's cooldown check compares whole-second
     RFC3339 strings (buffer/sqlite.go IsDuplicate) -- with signal_cooldown=0,
     two events on the SAME resource landing in the same wall-clock second
@@ -110,5 +123,5 @@ def run_all_chains(container: str, n_repeats: int, listener_host: str, base_port
         results.append(trigger_keystore_write(container, i))
         results.append(trigger_env_write(container, i))
         time.sleep(1.1)
-        results.append(trigger_suspicious_outbound(container, listener_host, base_port + i))
+        results.append(trigger_suspicious_outbound(container, listener_host, i))
     return results

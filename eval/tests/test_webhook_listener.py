@@ -1,9 +1,10 @@
 import json
+import socket
 import urllib.request
 
 import pytest
 
-from harness.webhook_listener import WebhookListener
+from harness.webhook_listener import DecoyListener, WebhookListener
 
 
 @pytest.fixture
@@ -54,3 +55,20 @@ def test_t1_is_arrival_time_not_payload_timestamp(listener):
 
     alert = listener.get_alerts()[0]
     assert before <= alert.t1 <= after
+
+
+def test_decoy_listener_accepts_and_holds_a_real_connection():
+    decoy = DecoyListener(host="127.0.0.1", port=18444)
+    decoy.start()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect(("127.0.0.1", 18444))
+        # connection must not be immediately reset -- a brief lack of RST/error
+        # is the whole point (keeps the connection ESTABLISHED for a poller)
+        s.settimeout(0.3)
+        with pytest.raises(socket.timeout):
+            s.recv(1)
+        s.close()
+    finally:
+        decoy.stop()
