@@ -26,7 +26,11 @@ type Config struct {
 	// Minimum severity to trigger immediate alerts: "high" or "critical"
 	MinSeverity string `yaml:"min_severity"`
 
-	// Cooldown between repeat alerts for the same event fingerprint (default 15m)
+	// Cooldown between repeat alerts for the same event fingerprint. Zero is
+	// a real, meaningful value here (no cooldown -- fire on every match);
+	// pass a negative Duration to request the package default (15m) instead.
+	// A caller relying on the zero-value of an unset Config also gets the
+	// default, since Go's zero Duration is 0 either way.
 	Cooldown time.Duration
 
 	Slack    *SlackConfig    `yaml:"slack"`
@@ -70,7 +74,13 @@ var severityRank = map[collector.Severity]int{
 }
 
 func New(cfg Config) *Dispatcher {
-	if cfg.Cooldown == 0 {
+	// CORRECTED (live-reproduced): treating Cooldown == 0 as "unset" made an
+	// explicit signal_cooldown: 0s in config.yaml (a real, valid request for
+	// "no cooldown, fire on every match") silently become 15 minutes instead
+	// -- indistinguishable from a caller who never touched the field. Zero
+	// is a meaningful value for this field; only a negative Duration
+	// (impossible as a real cooldown) now requests the package default.
+	if cfg.Cooldown < 0 {
 		cfg.Cooldown = 15 * time.Minute
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
