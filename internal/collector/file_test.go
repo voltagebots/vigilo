@@ -120,3 +120,43 @@ func TestFileWatcherExcludePath(t *testing.T) {
 		}
 	}
 }
+
+// TestFileWatcherWatchesASingleFilePath is a regression for a live-reproduced
+// bug: watch_paths entries pointing directly at a single file (not a
+// directory) -- e.g. config.example.yaml's own recommended /app/.env entry --
+// fell through addRecursive's WalkDir callback with d.IsDir()==false and were
+// never passed to watcher.Add(), silently leaving the file unwatched.
+func TestFileWatcherWatchesASingleFilePath(t *testing.T) {
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, ".env")
+	if err := os.WriteFile(targetFile, []byte("SEED=1"), 0600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	events := make(chan Event, 16)
+	// watch_paths points directly at the FILE, not its containing directory --
+	// the exact shape that silently produced zero watches before the fix.
+	watcher, err := NewFileWatcher([]string{targetFile}, nil, events)
+	if err != nil {
+		t.Fatalf("NewFileWatcher: %v", err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer watcher.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := os.WriteFile(targetFile, []byte("SEED=2"), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Resource != targetFile {
+			t.Errorf("resource = %q, want %q", e.Resource, targetFile)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout: no event received for a watch_paths entry pointing directly at a file")
+	}
+}

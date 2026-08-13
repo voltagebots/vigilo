@@ -88,6 +88,20 @@ func (fw *FileWatcher) Stop() {
 }
 
 func (fw *FileWatcher) addRecursive(root string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		// CORRECTED (live-reproduced): a watch_paths entry pointing directly
+		// at a single file (not a directory) -- e.g. config.example.yaml's
+		// own recommended /app/.env entry -- fell through WalkDir's callback
+		// with d.IsDir()==false and was never passed to watcher.Add(),
+		// silently leaving it unwatched. Verified live: writes to a
+		// file-only watch_paths entry produced no fsnotify event or alert
+		// until this fix.
+		return fw.watcher.Add(root)
+	}
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable
