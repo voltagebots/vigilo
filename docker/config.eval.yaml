@@ -1,0 +1,52 @@
+# vigilo-eval config -- minimal slice per plan.md Q4 (webhook only, no
+# suppression tuning, no Slack/Telegram/email). Immediate-tier signals only:
+# analyst tier (Claude-dependent) is out of scope this pass, blocked on the
+# same Anthropic billing issue as memkit-eval's resolver work.
+
+watch_paths:
+  - /app/keystore
+  - /app/.env
+
+exclude_paths:
+  - /tmp
+  - /root/.cache
+
+# Network chain is poll-based -- this value is reported alongside every
+# network-chain latency number (Step 0.5 H2), never blended into file-chain
+# (fsnotify, event-driven) numbers as if it applied to those too.
+poll_interval: 1s
+
+buffer_retention_hours: 24
+
+# HTTP transport so harness/mcp_client.py can reach it over the eval network,
+# not stdio (which would require a subprocess pipe, not a fit for a
+# container the harness doesn't own the process tree of).
+mcp_transport: http
+mcp_addr: ":7070"
+
+# CORRECTED (live verification): vigilo's own 1h default (blindly copied
+# from config.example.yaml) suppresses repeat alerts on the SAME resource
+# for an hour regardless of content -- confirmed live, a second write to an
+# already-alerted file produced no new alert. This is a noise-reduction
+# feature for production, actively hostile to a controlled N-repeat latency
+# measurement. Disabled for this eval; per-repeat trigger uses a distinct
+# resource path per repeat as the primary mitigation (see trigger.py),
+# cooldown=0 as a second layer so a bug in that isn't silently masked by
+# cooldown hiding it.
+signal_cooldown: 0s
+
+alerter:
+  # min_severity=high: matches Step 0.5 M-condition, only immediate-tier
+  # signals we actually trigger (keystore/env read/write, suspicious
+  # outbound) are severity=high or critical per the README's own table.
+  min_severity: high
+  webhooks:
+    - name: eval-listener
+      url: http://webhook-listener:8090/alert
+      # no auth header -- eval-network-only traffic, never exposed to the
+      # real internet (Step 0.5 C1/BLOCKER isolation)
+
+# Deliberately empty -- Step 0 Q4 decided against suppression-rule tuning.
+# Raw untuned false-positive rate is the honest out-of-box signal; tuning
+# would flatter the number relative to what a first-time deployer sees.
+suppress_rules: []

@@ -1,0 +1,41 @@
+# Isolated eval compose -- NEVER reuse vigilo's own shipped docker-compose.yml,
+# which mounts host /proc and /home and sets network_mode: host (Step 0.5
+# BLOCKER: that config observes the real host and would let a triggered
+# "suspicious outbound connection" egress from the real machine's real IP).
+#
+# This file deliberately omits `network_mode` -- compose's own default
+# per-project bridge network is exactly the isolated surface wanted: no host
+# /proc, no host /home, daemon only sees its OWN container's namespaces.
+#
+# Vigilo pinned to a specific commit SHA (Step 0.5 M2) for reproducibility --
+# see PINNED_COMMIT below and in scripts/run_evaluation.py.
+
+services:
+  daemon:
+    build:
+      context: ../../vigilo
+      dockerfile: Dockerfile
+    volumes:
+      - ./config.eval.yaml:/etc/vigilo/config.yaml:ro
+    # Seeds the fake keystore/.env INTO the container's own filesystem (not a
+    # host bind mount -- Step 0.5 L1, fsnotify doesn't reliably propagate
+    # across a host-bind-mounted volume) before starting the real daemon
+    # with its normal entrypoint args.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /app/keystore &&
+        echo eval-fixture > /app/keystore/id_eval &&
+        echo EVAL_FIXTURE=1 > /app/.env &&
+        exec /usr/local/bin/vigilo -config /etc/vigilo/config.yaml -db /var/lib/vigilo/events.db
+    ports:
+      - "127.0.0.1:7070:7070"   # MCP, localhost-only -- harness runs on the host
+    depends_on:
+      - webhook-listener
+
+  webhook-listener:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.listener
+    ports:
+      - "127.0.0.1:8090:8090"   # harness (on the host) reads captured alerts here
