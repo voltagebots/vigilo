@@ -24,15 +24,15 @@ buffer_retention_hours: 24
 mcp_transport: http
 mcp_addr: ":7070"
 
-# CORRECTED (live verification): vigilo's own 1h default (blindly copied
-# from config.example.yaml) suppresses repeat alerts on the SAME resource
-# for an hour regardless of content -- confirmed live, a second write to an
-# already-alerted file produced no new alert. This is a noise-reduction
-# feature for production, actively hostile to a controlled N-repeat latency
-# measurement. Disabled for this eval; per-repeat trigger uses a distinct
-# resource path per repeat as the primary mitigation (see trigger.py),
-# cooldown=0 as a second layer so a bug in that isn't silently masked by
-# cooldown hiding it.
+# CORRECTED (live verification, two real findings, both fixed upstream):
+# vigilo's own 1h default (blindly copied from config.example.yaml)
+# suppresses repeat alerts on the SAME resource for an hour regardless of
+# content -- a noise-reduction feature for production, actively hostile to
+# a controlled N-repeat latency measurement. A first attempt at 0s here hit
+# a SECOND, deeper bug in internal/alerter/alerter.go's New(), which treated
+# cfg.Cooldown == 0 as "unset" and silently forced 15 minutes regardless of
+# what the config said. Fixed upstream (commit 335e4a7, negative-Duration
+# sentinel instead of zero) -- 0s now means what it says.
 signal_cooldown: 0s
 
 alerter:

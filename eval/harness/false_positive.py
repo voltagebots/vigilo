@@ -18,7 +18,14 @@ WORKLOAD_QUALIFIER = "measured against a bounded window of in-container dev acti
 @dataclass(frozen=True)
 class FalsePositiveWindow:
     duration_s: float
-    benign_events_observed: bool  # collectors saw ANY benign-set activity -- non-vacuous check
+    # CORRECTED (live investigation): Vigilo's collectors are alert-only --
+    # internal/collector/process_linux.go only constructs an Event for a
+    # severity=high/critical match, and excluded paths never reach the file
+    # watcher at all (SkipDir). There is no daemon-side "info" signal proving
+    # benign activity happened; benign_events_observed instead records that
+    # the HARNESS's own generator actually executed real actions (confirmed
+    # via successful docker exec calls, not assumed) during the window.
+    benign_events_observed: bool
     alert_count: int
 
 

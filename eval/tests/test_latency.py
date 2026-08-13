@@ -4,7 +4,7 @@ from harness.webhook_listener import AlertReceived
 
 
 def test_compute_latency_ms():
-    trigger = TriggerResult(chain_name="keystore_write", t0=100.0, mechanism="fsnotify")
+    trigger = TriggerResult(chain_name="keystore_write", t0=100.0, mechanism="fsnotify", resource="/app/keystore/x")
     alert = AlertReceived(t1=100.05, payload={})
     metric = compute_latency(trigger, alert)
     assert metric is not None
@@ -14,7 +14,7 @@ def test_compute_latency_ms():
 def test_compute_latency_rejects_negative():
     """Clock skew or mispairing -- t1 before t0 -- must not report a
     nonsense negative number."""
-    trigger = TriggerResult(chain_name="keystore_write", t0=100.0, mechanism="fsnotify")
+    trigger = TriggerResult(chain_name="keystore_write", t0=100.0, mechanism="fsnotify", resource="/app/keystore/x")
     alert = AlertReceived(t1=99.0, payload={})
     assert compute_latency(trigger, alert) is None
 
@@ -30,10 +30,12 @@ def test_aggregate_latencies_mechanism_labeling():
     blended into fsnotify (event-driven) chain numbers (Step 0.5 H2)."""
     metrics = [
         compute_latency(
-            TriggerResult(chain_name="keystore_write", t0=0.0, mechanism="fsnotify"), AlertReceived(t1=0.01, payload={})
+            TriggerResult(chain_name="keystore_write", t0=0.0, mechanism="fsnotify", resource="/app/keystore/x"),
+            AlertReceived(t1=0.01, payload={}),
         ),
         compute_latency(
-            TriggerResult(chain_name="suspicious_outbound", t0=0.0, mechanism="poll"), AlertReceived(t1=1.0, payload={})
+            TriggerResult(chain_name="suspicious_outbound", t0=0.0, mechanism="poll", resource=":4444"),
+            AlertReceived(t1=1.0, payload={}),
         ),
     ]
     report = aggregate_latencies(metrics, poll_interval_ms=1000.0)
@@ -44,7 +46,7 @@ def test_aggregate_latencies_mechanism_labeling():
 def test_aggregate_latencies_per_chain_median_and_p95():
     metrics = [
         compute_latency(
-            TriggerResult(chain_name="keystore_write", t0=0.0, mechanism="fsnotify"),
+            TriggerResult(chain_name="keystore_write", t0=0.0, mechanism="fsnotify", resource="/app/keystore/x"),
             AlertReceived(t1=t / 1000, payload={}),
         )
         for t in (10, 20, 30, 40, 100)

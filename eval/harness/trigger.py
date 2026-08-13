@@ -31,6 +31,7 @@ class TriggerResult:
     chain_name: str
     t0: float
     mechanism: str  # "fsnotify" | "poll"
+    resource: str  # exact expected alert resource -- see run_evaluation.py's pairing note
 
 
 def _assert_daemon_container(container: str) -> None:
@@ -53,9 +54,10 @@ def trigger_keystore_write(container: str, repeat_index: int) -> TriggerResult:
     one alert. Each repeat writes to a genuinely distinct file path within
     the watched directory instead."""
     _assert_daemon_container(container)
+    resource = f"/app/keystore/id_eval_{repeat_index}"
     t0 = time.time()
-    _docker_exec(container, "sh", "-c", f"echo eval-write >> /app/keystore/id_eval_{repeat_index}")
-    return TriggerResult(chain_name="keystore_write", t0=t0, mechanism="fsnotify")
+    _docker_exec(container, "sh", "-c", f"echo eval-write >> {resource}")
+    return TriggerResult(chain_name="keystore_write", t0=t0, mechanism="fsnotify", resource=resource)
 
 
 def trigger_env_write(container: str, repeat_index: int) -> TriggerResult:
@@ -68,7 +70,10 @@ def trigger_env_write(container: str, repeat_index: int) -> TriggerResult:
     _assert_daemon_container(container)
     t0 = time.time()
     _docker_exec(container, "sh", "-c", f"echo EVAL={repeat_index} >> /app/.env")
-    return TriggerResult(chain_name="env_write", t0=t0, mechanism="fsnotify")
+    # resource is identical every repeat (a single watched file, no per-repeat
+    # path trick available) -- pairing relies on chronological consume-once
+    # matching in run_evaluation.py, not resource uniqueness, for this chain.
+    return TriggerResult(chain_name="env_write", t0=t0, mechanism="fsnotify", resource="/app/.env")
 
 
 # Real entries from internal/collector/network_linux.go's suspiciousPorts --
@@ -105,7 +110,10 @@ def trigger_suspicious_outbound(container: str, listener_host: str, repeat_index
     port = _SUSPICIOUS_PORTS[repeat_index % len(_SUSPICIOUS_PORTS)]
     t0 = time.time()
     _docker_exec(container, "sh", "-c", f"sleep 3 | nc {listener_host} {port}")
-    return TriggerResult(chain_name="suspicious_outbound", t0=t0, mechanism="poll")
+    # resource is "{listener_ip}:{port}" -- the compose-assigned IP isn't
+    # known here, so callers match by port SUFFIX (still a real per-repeat
+    # differentiator via the 4-port cycle), not full equality.
+    return TriggerResult(chain_name="suspicious_outbound", t0=t0, mechanism="poll", resource=f":{port}")
 
 
 def run_all_chains(container: str, n_repeats: int, listener_host: str) -> list[TriggerResult]:
