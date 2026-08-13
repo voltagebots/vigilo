@@ -7,13 +7,14 @@
 # per-project bridge network is exactly the isolated surface wanted: no host
 # /proc, no host /home, daemon only sees its OWN container's namespaces.
 #
-# Vigilo pinned to a specific commit SHA (Step 0.5 M2) for reproducibility --
-# see PINNED_COMMIT below and in scripts/run_evaluation.py.
+# Version pinning (Step 0.5 M2) is now implicit: eval/ lives inside the
+# vigilo repo itself, so the eval always builds against whatever commit
+# it's checked out at -- no separate SHA to track or drift out of sync.
 
 services:
   daemon:
     build:
-      context: ../../vigilo
+      context: ../..
       dockerfile: Dockerfile
     volumes:
       - ./config.eval.yaml:/etc/vigilo/config.yaml:ro
